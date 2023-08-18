@@ -24,6 +24,7 @@ mod consensus;
 /// mode.  It is possible we fall behind again and find there is a new better
 /// ledger, moving back and forth between WrongLedger and SwitchLedger as
 /// we attempt to catch up.
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum ConsensusMode {
     /// We are normal participant in consensus and propose our position
     Proposing,

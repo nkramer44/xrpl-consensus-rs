@@ -1,17 +1,6 @@
 use std::time::Duration;
+use crate::consensus::{ConsensusCloseTimes, ConsensusParams};
 use crate::ConsensusMode;
-
-pub struct ConsensusCloseTimes {
-    // TODO
-}
-
-pub struct ConsensusProposal {
-    // TODO
-}
-
-pub struct ConsensusParams {
-
-}
 
 pub trait Adaptor {
     type LedgerType;
