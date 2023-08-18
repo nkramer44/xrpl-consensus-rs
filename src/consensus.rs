@@ -1,4 +1,5 @@
 #![allow(dead_code)] // FIXME: Remove this eventually
+#![allow(unused_variables)] // FIXME: Remove this eventually
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::{Add, Sub};
