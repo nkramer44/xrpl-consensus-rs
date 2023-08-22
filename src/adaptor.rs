@@ -1,5 +1,6 @@
 use std::time::Duration;
-use crate::consensus::{ConsensusCloseTimes, ConsensusParams};
+use crate::consensus::{ConsensusCloseTimes};
+use crate::consensus_params::ConsensusParams;
 use crate::ConsensusMode;
 
 pub trait Adaptor {
@@ -74,7 +75,7 @@ pub trait Adaptor {
 
     fn propose(
         &mut self,
-        position: &Self::ProposalType
+        position: &Self::ProposalType,
     );
 
     fn share_peer_position(&mut self, proposal: &Self::PeerPositionType);
