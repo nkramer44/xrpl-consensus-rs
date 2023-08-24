@@ -120,6 +120,69 @@ impl Default for ConsensusParams {
     }
 }
 
+impl ConsensusParams {
+    pub fn validation_valid_wall(&self) -> &Duration {
+        &self.validation_valid_wall
+    }
+    pub fn validation_valid_local(&self) -> &Duration {
+        &self.validation_valid_local
+    }
+    pub fn validation_valid_early(&self) -> &Duration {
+        &self.validation_valid_early
+    }
+    pub fn propose_freshness(&self) -> &Duration {
+        &self.propose_freshness
+    }
+    pub fn propose_interval(&self) -> &Duration {
+        &self.propose_interval
+    }
+    pub fn min_consensus_pct(&self) -> usize {
+        self.min_consensus_pct
+    }
+    pub fn ledger_idle_interval(&self) -> &Duration {
+        &self.ledger_idle_interval
+    }
+    pub fn ledger_min_consensus(&self) -> &Duration {
+        &self.ledger_min_consensus
+    }
+    pub fn ledger_max_consensus(&self) -> &Duration {
+        &self.ledger_max_consensus
+    }
+    pub fn ledger_min_close(&self) -> &Duration {
+        &self.ledger_min_close
+    }
+    pub fn ledger_granularity(&self) -> &Duration {
+        &self.ledger_granularity
+    }
+    pub fn av_min_consensus_time(&self) -> &Duration {
+        &self.av_min_consensus_time
+    }
+    pub fn av_init_consensus_pct(&self) -> usize {
+        self.av_init_consensus_pct
+    }
+    pub fn av_mid_consensus_time(&self) -> usize {
+        self.av_mid_consensus_time
+    }
+    pub fn av_mid_consensus_pct(&self) -> usize {
+        self.av_mid_consensus_pct
+    }
+    pub fn av_late_consensus_time(&self) -> usize {
+        self.av_late_consensus_time
+    }
+    pub fn av_late_consensus_pct(&self) -> usize {
+        self.av_late_consensus_pct
+    }
+    pub fn av_stuck_consensus_time(&self) -> usize {
+        self.av_stuck_consensus_time
+    }
+    pub fn av_stuck_consensus_pct(&self) -> usize {
+        self.av_stuck_consensus_pct
+    }
+    pub fn av_ct_consensus_pct(&self) -> usize {
+        self.av_ct_consensus_pct
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

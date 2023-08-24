@@ -79,9 +79,9 @@ impl<'a, T: Adaptor> Consensus<'a, T> {
         now_untrusted: &HashSet<T::NodeIdType>,
         proposing: bool,
     ) {
-        if (self.first_round) {
+        if self.first_round {
             // take our initial view of close_time from the seed ledger
-            self.previous_round_time = Some(self.adaptor.params().ledger_idle_interval);
+            self.previous_round_time = Some(*self.adaptor.params().ledger_idle_interval());
             // self.previous_close_time = prev_ledger.closeTime();
         }
 
