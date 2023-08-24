@@ -1,52 +1,12 @@
 #![allow(dead_code)] // FIXME: Remove this eventually
 #![allow(unused_variables)] // FIXME: Remove this eventually
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::{Add, Sub};
 use std::time::{Duration, Instant};
 use crate::adaptor::Adaptor;
 use crate::{ConsensusMode, ConsensusPhase};
-
-pub struct ConsensusCloseTimes {
-    // TODO
-}
-
-pub struct ConsensusProposal {
-    // TODO
-}
-
-pub struct ConsensusTimer {
-    start: Instant,
-    duration: Duration,
-}
-
-impl Default for ConsensusTimer {
-    fn default() -> Self {
-        ConsensusTimer {
-            start: Instant::now(),
-            duration: Duration::ZERO,
-        }
-    }
-}
-
-impl ConsensusTimer {
-    pub fn read(&self) -> &Duration {
-        &self.duration
-    }
-
-    pub fn tick_duration(&mut self, fixed: Duration) {
-        self.duration = self.duration.add(fixed);
-    }
-
-    pub fn reset(&mut self, time_point: Instant) {
-        self.start = time_point;
-        self.duration = Duration::ZERO;
-    }
-
-    pub fn tick_fixed(&mut self, time_point: Instant) {
-        self.duration = time_point.sub(self.start);
-    }
-}
+use crate::consensus_times::{ConsensusCloseTimes, ConsensusTimer};
 
 /// Wrapper struct to ensure the Adaptor is notified whenever the ConsensusMode changes
 struct MonitoredMode(ConsensusMode);
@@ -68,11 +28,10 @@ pub struct Consensus<'a, T: Adaptor> {
     mode: MonitoredMode,
     first_round: bool,
     have_close_time_consensus: bool,
-    // clock: Instant,
     converge_percent: u32,
     open_time: ConsensusTimer,
     close_resolution: Duration,
-    prev_round_time: Option<Duration>,
+    previous_round_time: Option<Duration>,
     now: Option<Instant>,
     previous_close_time: Option<Instant>,
     prev_ledger_id: Option<T::LedgerIdType>,
@@ -97,7 +56,7 @@ impl<'a, T: Adaptor> Consensus<'a, T> {
             converge_percent: 0,
             open_time: ConsensusTimer::default(),
             close_resolution: Duration::from_secs(30), // Taken from LedgerTiming.h ledgerDefaultTimeResolution
-            prev_round_time: None,
+            previous_round_time: None,
             now: None,
             previous_close_time: None,
             prev_ledger_id: None,
@@ -120,6 +79,12 @@ impl<'a, T: Adaptor> Consensus<'a, T> {
         now_untrusted: &HashSet<T::NodeIdType>,
         proposing: bool,
     ) {
+        if (self.first_round) {
+            // take our initial view of close_time from the seed ledger
+            self.previous_round_time = Some(self.adaptor.params().ledger_idle_interval);
+            // self.previous_close_time = prev_ledger.closeTime();
+        }
+
         todo!()
     }
 

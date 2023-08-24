@@ -1,6 +1,6 @@
 use std::time::Duration;
-use crate::consensus::{ConsensusCloseTimes};
 use crate::consensus_params::ConsensusParams;
+use crate::consensus_times::ConsensusCloseTimes;
 use crate::ConsensusMode;
 
 pub trait Adaptor {

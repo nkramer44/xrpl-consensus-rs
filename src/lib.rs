@@ -1,6 +1,7 @@
 mod adaptor;
 mod consensus;
 mod consensus_params;
+mod consensus_times;
 
 /// Represents how a node currently participates in Consensus.
 ///
