@@ -28,11 +28,10 @@ pub struct Consensus<'a, T: Adaptor> {
     mode: MonitoredMode,
     first_round: bool,
     have_close_time_consensus: bool,
-    // clock: Instant,
     converge_percent: u32,
     open_time: ConsensusTimer,
     close_resolution: Duration,
-    prev_round_time: Option<Duration>,
+    previous_round_time: Option<Duration>,
     now: Option<Instant>,
     previous_close_time: Option<Instant>,
     prev_ledger_id: Option<T::LedgerIdType>,
@@ -57,7 +56,7 @@ impl <'a, T: Adaptor> Consensus<'a, T> {
             converge_percent: 0,
             open_time: ConsensusTimer::default(),
             close_resolution: Duration::from_secs(30), // Taken from LedgerTiming.h ledgerDefaultTimeResolution
-            prev_round_time: None,
+            previous_round_time: None,
             now: None,
             previous_close_time: None,
             prev_ledger_id: None,
@@ -80,6 +79,12 @@ impl <'a, T: Adaptor> Consensus<'a, T> {
         now_untrusted: &HashSet<T::NodeIdType>,
         proposing: bool
     ) {
+        if (self.first_round) {
+            // take our initial view of close_time from the seed ledger
+            self.previous_round_time = Some(self.adaptor.params().ledger_idle_interval);
+            // self.previous_close_time = prev_ledger.closeTime();
+        }
+
         todo!()
     }
 
