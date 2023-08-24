@@ -75,7 +75,7 @@ pub trait Adaptor {
 
     fn propose(
         &mut self,
-        position: &Self::ProposalType
+        position: &Self::ProposalType,
     );
 
     fn share_peer_position(&mut self, proposal: &Self::PeerPositionType);

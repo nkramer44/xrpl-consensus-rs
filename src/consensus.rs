@@ -42,10 +42,10 @@ pub struct Consensus<'a, T: Adaptor> {
     curr_peer_positions: HashMap<T::NodeIdType, T::PeerPositionType>,
     recent_peer_positions: HashMap<T::NodeIdType, VecDeque<T::PeerPositionType>>,
     prev_proposers: usize,
-    dead_nodes: HashSet<T::NodeIdType>
+    dead_nodes: HashSet<T::NodeIdType>,
 }
 
-impl <'a, T: Adaptor> Consensus<'a, T> {
+impl<'a, T: Adaptor> Consensus<'a, T> {
     pub fn new(adaptor: &'a mut T) -> Consensus<T> {
         Consensus {
             adaptor,
@@ -77,7 +77,7 @@ impl <'a, T: Adaptor> Consensus<'a, T> {
         prev_ledger_id: &T::LedgerIdType,
         prev_ledger: T::LedgerType,
         now_untrusted: &HashSet<T::NodeIdType>,
-        proposing: bool
+        proposing: bool,
     ) {
         if (self.first_round) {
             // take our initial view of close_time from the seed ledger
@@ -88,7 +88,7 @@ impl <'a, T: Adaptor> Consensus<'a, T> {
         todo!()
     }
 
-    pub fn peer_proposal(&mut self,now: Instant, new_proposal: T::PeerPositionType) -> bool {
+    pub fn peer_proposal(&mut self, now: Instant, new_proposal: T::PeerPositionType) -> bool {
         todo!()
     }
 
@@ -115,13 +115,13 @@ impl <'a, T: Adaptor> Consensus<'a, T> {
     // TODO: Serde instead of rippled getJson method?
 }
 
-impl <'a, T: Adaptor> Consensus<'a, T> {
+impl<'a, T: Adaptor> Consensus<'a, T> {
     fn _start_round(
         &mut self,
         now: &Instant,
         prev_ledger_id: &T::LedgerIdType,
         prev_ledger: &T::LedgerType,
-        mode: ConsensusMode
+        mode: ConsensusMode,
     ) {
         todo!()
     }
@@ -141,7 +141,7 @@ impl <'a, T: Adaptor> Consensus<'a, T> {
     fn _peer_proposal(
         &mut self,
         now: &Instant,
-        new_proposal: &T::PeerPositionType
+        new_proposal: &T::PeerPositionType,
     ) -> bool {
         todo!()
     }
