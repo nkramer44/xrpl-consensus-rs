@@ -1,20 +1,18 @@
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use std::ops::Add;
 use std::sync::{Mutex, MutexGuard};
+use std::time::Instant;
 use crate::adaptor::Adaptor;
 use crate::ledger_trie::LedgerTrie;
+use crate::LedgerIndex;
+use crate::seq_enforcer::SeqEnforcer;
 use crate::validation_params::ValidationParams;
-
-type LedgerIndex = u32;
 
 struct AgedUnorderedMap<K, V> {
     // TODO: This should be a port/replica of beast::aged_unordered_map
     v: PhantomData<K>,
     k: PhantomData<V>
-}
-
-struct SeqEnforcer {
-    // TODO
 }
 
 struct KeepRange {
