@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "xrpl-consensus",
-    "xrpl-consensus-validations"
+    "xrpl-consensus-validations",
+    "xrpl-consensus-core"
 ]
 
 [workspace.package]
@@ -13,3 +14,4 @@ repository = "https://github.com/nkramer44/xrpl-consensus-rs"
 rust-version = "1.64"
 
 [workspace.dependencies]
+xrpl-consensus-core = {path = "xrpl-consensus-core"}

@@ -1,10 +1,11 @@
 use std::time::Duration;
+use xrpl_consensus_core::Ledger;
 use crate::consensus_params::ConsensusParams;
 use crate::consensus_times::ConsensusCloseTimes;
 use crate::ConsensusMode;
 
 pub trait Adaptor {
-    type LedgerType;
+    type LedgerType: Ledger<IdType = Self::LedgerIdType>;
     type LedgerIdType;
     type TxSetType;
     type TxSetIdType;

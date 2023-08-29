@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Add;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
+use xrpl_consensus_core::Ledger;
 use crate::adaptor::Adaptor;
 use crate::ledger_trie::LedgerTrie;
 use crate::LedgerIndex;
@@ -22,7 +23,9 @@ struct KeepRange {
 
 pub struct Validations<T: Adaptor> {
     /// Manages concurrent access to members
-    mutex: Mutex<()>,
+    // TODO: Do we need a Mutex here, or should we create another struct that has one field, a Mutex<Validations>?
+    //   I think the latter. see https://stackoverflow.com/questions/57256035/how-to-lock-a-rust-struct-the-way-a-struct-is-locked-in-go
+    // mutex: Mutex<()>,
     /// Validations from currently listed and trusted nodes (partial and full)
     current: HashMap<T::NodeIdType, T::ValidationType>,
     /// Used to enforce the largest validation invariant for the local node
@@ -58,8 +61,17 @@ impl<T: Adaptor> Validations<T> {
         &self.params
     }
 
-    pub fn can_validate_seq(&self, seq: LedgerIndex) -> bool {
-        todo!()
+    /// Return whether the local node can issue a validation for the given
+    /// sequence number.
+    ///
+    /// # Params
+    /// - s: The [`LedgerIndex`] of the ledger the node wants to validate
+    ///
+    /// # Return
+    /// A bool indicating whether the validation satisfies the invariant, updating the
+    /// largest sequence number seen accordingly.
+    pub fn can_validate_seq(&mut self, seq: LedgerIndex) -> bool {
+        self.local_seq_enforcer.advance_ledger(Instant::now(), seq, &self.params)
     }
 
     pub fn add(&mut self, node_id: &T::NodeIdType, validation: &T::ValidationType) -> ValidationStatus {
@@ -91,7 +103,12 @@ impl<T: Adaptor> Validations<T> {
         curr: &T::LedgerType,
         min_valid_seq: LedgerIndex,
     ) -> T::LedgerIdType {
-        todo!()
+        self.get_preferred(curr)
+            .filter(|preferred| preferred.0 >= min_valid_seq)
+            .map_or_else(
+                || curr.id(),
+                |preferred| preferred.1
+            )
     }
 
     pub fn get_prefered_lcl(
