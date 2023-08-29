@@ -94,6 +94,17 @@ impl<T: Adaptor> Validations<T> {
         todo!()
     }
 
+    /// Return the sequence number and ID of the preferred working ledger.
+    ///
+    /// A ledger is preferred if it has more support amongst trusted validators and is **not**
+    /// an ancestor of the current working ledger; otherwise it remains the current working ledger.
+    ///
+    /// # Params
+    /// - curr: The local node's current working ledger.
+    ///
+    /// # Returns
+    /// The sequence and id of the preferred working ledger, or `None` if no trusted validations
+    /// are available to determine the preferred ledger.
     pub fn get_preferred(&mut self, curr: &T::LedgerType) -> Option<(LedgerIndex, T::LedgerIdType)> {
         let seq = self.local_seq_enforcer.largest();
         let preferred = self._with_trie(|trie| {
@@ -151,6 +162,18 @@ impl<T: Adaptor> Validations<T> {
         }
     }
 
+    /// Return the ID of the preferred working ledger that exceeds a minimum valid ledger sequence
+    /// number.
+    ///
+    /// A ledger is preferred if it has more support amongst trusted validators and is **not**
+    /// an ancestor of the current working ledger; otherwise it remains the current working ledger.
+    ///
+    /// # Params
+    /// - curr: The local node's current working ledger.
+    /// - min_valid_seq: Minimum allowed sequence number.
+    ///
+    /// # Returns
+    /// The ID of the preferred working ledger, or `curr` if the preferred ledger is not valid.
     pub fn get_preferred_id(
         &mut self,
         curr: &T::LedgerType,
