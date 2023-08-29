@@ -1,6 +1,6 @@
 use std::ops::Add;
 use std::time::Instant;
-use crate::LedgerIndex;
+use xrpl_consensus_core::LedgerIndex;
 use crate::validation_params::ValidationParams;
 
 /// Enforce validation increasing sequence requirement.

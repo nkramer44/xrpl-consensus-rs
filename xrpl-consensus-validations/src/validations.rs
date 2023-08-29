@@ -1,12 +1,12 @@
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ops::Add;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
-use xrpl_consensus_core::Ledger;
+use xrpl_consensus_core::{Ledger, LedgerIndex};
 use crate::adaptor::Adaptor;
-use crate::ledger_trie::LedgerTrie;
-use crate::LedgerIndex;
+use crate::ledger_trie::{LedgerTrie, SpanTip};
 use crate::seq_enforcer::SeqEnforcer;
 use crate::validation_params::ValidationParams;
 
@@ -95,7 +95,60 @@ impl<T: Adaptor> Validations<T> {
     }
 
     pub fn get_preferred(&mut self, curr: &T::LedgerType) -> Option<(LedgerIndex, T::LedgerIdType)> {
-        todo!()
+        let seq = self.local_seq_enforcer.largest();
+        let preferred = self._with_trie(|trie| {
+            trie.get_preferred(seq)
+        });
+
+        match preferred {
+            // No trusted validations to determine branch
+            None => {
+                // fall back to majority over acquiring ledgers
+                self.acquiring.iter()
+                    .max_by(|a, b| {
+                        let a_key = a.0;
+                        let a_size: usize = a.1.len();
+                        let b_key = b.0;
+                        let b_size: usize = b.1.len();
+
+                        // order by number of trusted peers validating that ledger
+                        // break ties with ledger ID
+                        match a_size.cmp(&b_size) {
+                            Ordering::Less => Ordering::Less,
+                            Ordering::Greater => Ordering::Greater,
+                            Ordering::Equal => {
+                                let a_ledger_id = &a_key.1;
+                                let b_ledger_id = &b_key.1;
+                                a_ledger_id.cmp(b_ledger_id)
+                            }
+                        }
+                    })
+                    .map(|entry| *entry.0)
+            }
+            Some(preferred) => {
+                // If we are the parent of the preferred ledger, stick with our
+                // current ledger since we might be about to generate it
+                if preferred.seq() == curr.seq() + 1 &&
+                    preferred.ancestor(curr.seq()) == curr.id() {
+                    return Some((curr.seq(), curr.id()))
+                }
+
+                // A ledger ahead of us is preferred regardless of whether it is
+                // a descendant of our working ledger or it is on a different chain
+                if preferred.seq() > curr.seq() {
+                    return Some((preferred.seq(), preferred.id()));
+                }
+
+                // Only switch to earlier or same sequence number
+                // if it is a different chain.
+                if curr.get_ancestor(preferred.seq()) != preferred.id() {
+                    return Some((preferred.seq(), preferred.id()))
+                }
+
+                // Stick with current ledger
+                return Some((curr.seq(), curr.id()));
+            }
+        }
     }
 
     pub fn get_preferred_id(
@@ -194,11 +247,12 @@ impl<T: Adaptor> Validations<T> {
         todo!()
     }
 
-    fn _with_trie<F: FnMut(&mut T::ValidationType)>(
+    fn _with_trie<F: FnMut(&mut LedgerTrie<T::LedgerType>) -> R, R>(
         &mut self,
-        lock: MutexGuard<()>,
+        // TODO: Maybe reinstate this
+        // lock: MutexGuard<()>,
         f: F,
-    ) {
+    ) -> R {
         todo!()
     }
 
