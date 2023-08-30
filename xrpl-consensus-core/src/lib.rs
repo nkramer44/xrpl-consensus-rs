@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 pub type LedgerIndex = u32;
 
-pub trait Ledger {
+pub trait Ledger: Copy + Clone {
     type IdType: LedgerId;
 
     fn id(&self) -> Self::IdType;
@@ -10,6 +10,8 @@ pub trait Ledger {
     fn seq(&self) -> LedgerIndex;
 
     fn get_ancestor(&self, seq: LedgerIndex) -> Self::IdType;
+
+    fn make_genesis() -> Self;
 }
 
 pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone {
