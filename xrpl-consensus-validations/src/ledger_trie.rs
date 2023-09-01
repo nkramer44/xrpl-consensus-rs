@@ -1,12 +1,6 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
-use std::ptr;
-use std::rc::Rc;
-use std::sync::Arc;
 use xrpl_consensus_core::{Ledger, LedgerIndex};
-use crate::span::{Span, SpanTip};
+
+use crate::span::SpanTip;
 
 pub trait LedgerTrie<T: Ledger> {
 

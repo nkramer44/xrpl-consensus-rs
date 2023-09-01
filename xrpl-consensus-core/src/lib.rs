@@ -1,5 +1,3 @@
-use std::ops::{Index, IndexMut};
-
 pub type LedgerIndex = u32;
 
 pub trait Ledger: Copy + Clone {

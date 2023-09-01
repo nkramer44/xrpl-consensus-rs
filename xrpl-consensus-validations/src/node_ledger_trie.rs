@@ -76,7 +76,7 @@ pub struct NodeLedgerTrie<T: Ledger> {
 impl<T: Ledger> LedgerTrie<T> for NodeLedgerTrie<T> {
 
     fn insert(&mut self, ledger: &T, count: Option<u32>) {
-        let (mut loc, diff_seq) = self.find_mut(ledger);
+        let (loc, diff_seq) = self.find_mut(ledger);
 
         // loc.span has the longest common prefix with Span{ledger} of all
         // existing nodes in the trie. The Option<Span>'s below represent
@@ -104,7 +104,7 @@ impl<T: Ledger> LedgerTrie<T> for NodeLedgerTrie<T> {
 
             // Create old_suffix node that takes over loc
             let mut loc_ref_mut = loc.borrow_mut();
-            let mut new_node = Rc::new(RefCell::new(
+            let new_node = Rc::new(RefCell::new(
                 Node::from_span(
                     old_suffix,
                     loc.borrow().tip_support,
@@ -132,7 +132,7 @@ impl<T: Ledger> LedgerTrie<T> for NodeLedgerTrie<T> {
 
 impl<T: Ledger> NodeLedgerTrie<T> {
     fn find_mut(&mut self, ledger: &T) -> (Rc<RefCell<Node<T>>>, LedgerIndex) {
-        let mut curr = self.root.deref_mut();
+        let curr = self.root.deref_mut();
 
         // Note: This is different than C++ code. In C++, the loop below keeps updating curr.
         //  We cannot do that in Rust because of the borrow checker, so instead we keep track

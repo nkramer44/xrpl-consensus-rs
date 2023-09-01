@@ -1,10 +1,11 @@
+use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::ops::Add;
-use std::process::id;
+
 use generational_arena::{Arena, Index};
+
 use xrpl_consensus_core::{Ledger, LedgerIndex};
+
 use crate::ledger_trie::LedgerTrie;
 use crate::span::{Span, SpanTip};
 
@@ -14,7 +15,7 @@ pub struct Node<T: Ledger> {
     tip_support: u32,
     branch_support: u32,
     children: Vec<Index>,
-    parent: Option<Index>
+    parent: Option<Index>,
 }
 
 impl<T: Ledger> Node<T> {
@@ -50,7 +51,6 @@ impl<T: Ledger> Node<T> {
             parent: None,
         }
     }
-
 }
 
 pub struct ArenaLedgerTrie<T: Ledger> {
@@ -60,11 +60,10 @@ pub struct ArenaLedgerTrie<T: Ledger> {
 }
 
 impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
-
     fn insert(&mut self, ledger: &T, count: Option<u32>) {
         // Find the ID of the node with the longest common ancestry with `ledger`
         // and the sequence of the first ledger difference
-        let (loc_idx, diff_seq) = self.find(ledger);
+        let (loc_idx, diff_seq) = self._find(ledger);
 
         let mut inc_node_idx = Some(loc_idx);
 
@@ -150,6 +149,7 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
             loc.children.push(new_node_idx);
         }
 
+        // Update branch support all the way up the trie
         let count = count.unwrap_or(1);
         self.arena.get_mut(inc_node_idx.unwrap()).unwrap().tip_support += 1;
         while inc_node_idx.is_some() {
@@ -170,19 +170,119 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
     }
 
     fn get_preferred(&self, largest_issued: LedgerIndex) -> Option<SpanTip<T>> {
-        todo!()
+        if self.empty() {
+            return None;
+        }
+
+        let mut curr = self.arena.get(self.root);
+        let mut done = false;
+
+        let mut uncommitted: u32 = 0;
+
+        let mut uncommitted_it = self.seq_support.iter();
+        while curr.is_some() && !done {
+            // Within a single span, the preferred by branch strategy is simply
+            // to continue along the span as long as the branch support of
+            // the next ledger exceeds the uncommitted support for that ledger.
+
+            {
+                // Add any initial uncommitted support prior for ledgers
+                // earlier than nextSeq or earlier than largestIssued
+                let mut next_seq = curr.unwrap().span.start() + 1;
+                while let Some((seq, support)) = uncommitted_it.next() {
+                    if *seq < std::cmp::max(next_seq, largest_issued) {
+                        uncommitted += support;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Advance next_seq along the span
+                while next_seq < curr.unwrap().span.end() &&
+                    curr.unwrap().branch_support > uncommitted {
+                    // Jump to the next seq_support change.
+                    if let Some((seq, support)) = uncommitted_it.next() {
+                        if *seq < curr.unwrap().span.end() {
+                            next_seq = seq + 1;
+                            uncommitted += support;
+                        }
+                    } else {
+                        // Otherwise we jump to the end of the span
+                        next_seq = curr.unwrap().span.end();
+                    }
+                }
+
+                // We did not consume the entire span, so we have found the
+                // preferred ledger
+                if next_seq < curr.unwrap().span.end() {
+                    return Some(curr.unwrap().span.before(next_seq)?.tip());
+                }
+            }
+
+            // We have reached the end of the current span, so we need to
+            // find the best child
+            let mut margin = 0u32;
+            let mut best: Option<&Node<T>> = None;
+            if curr.unwrap().children.len() == 1 {
+                best = Some(self.arena.get(*curr.unwrap().children.get(0).unwrap()).unwrap());
+                margin = best?.branch_support;
+            } else if !curr.unwrap().children.is_empty() { // Children length > 1
+                // Sort placing children with largest branch support in the front,
+                // breaking ties with the span's starting ID
+
+                // NOTE: In C++, they sort the actual node's children vector.
+                //  In rust, we can't get a mutable reference to curr because then
+                //  we'd have a mutable reference to self.arena at the same time as having
+                //  a shared reference to self.arena. Therefore, this code sorts a temporary
+                //  clone of curr.children but does not update curr.children
+                let mut children_to_sort = curr.unwrap().children[2..].to_vec();
+                children_to_sort
+                    .sort_by(|&index1, &index2| {
+                        let node1 = self.arena.get(index1).unwrap();
+                        let node2 = self.arena.get(index2).unwrap();
+                        let cmp = node1.branch_support.cmp(&node2.branch_support);
+                        match cmp {
+                            Ordering::Equal => {
+                                node1.span.start_id().cmp(&node2.span.start_id())
+                            }
+                            _ => cmp
+                        }
+                    });
+
+                let first_child = self.arena.get(*children_to_sort.get(0).unwrap()).unwrap();
+                let second_child = self.arena.get(*children_to_sort.get(1).unwrap()).unwrap();
+                best = Some(first_child);
+                margin = first_child.branch_support - second_child.branch_support;
+
+                // If best holds the tie-breaker, gets one larger margin
+                // since the second best needs additional branchSupport
+                // to overcome the tie
+                if best.unwrap().span.start_id() > second_child.span.start_id() {
+                    margin += 1;
+                }
+            }
+
+            // If the best child has margin exceeding the uncommitted support,
+            // continue from that child, otherwise we are done
+            if best.is_some() && ((margin > uncommitted) || (uncommitted == 0)) {
+                curr = best;
+            } else {
+                done = true;
+            }
+        }
+
+        return Some(curr.unwrap().span.tip())
     }
 }
 
 impl<T: Ledger> ArenaLedgerTrie<T> {
-
     /// Find the node in the trie that represents the longest common ancestry
     /// with the given ledger.
     ///
     /// # Return
     /// A tuple of the found node's `Index` and the `LedgerIndex` of the first
     /// ledger difference.
-    pub fn find(&self, ledger: &T) -> (Index, LedgerIndex) {
+    fn _find(&self, ledger: &T) -> (Index, LedgerIndex) {
         // Root is always defined and is in common with all ledgers
         let mut curr = self.arena.get(self.root).unwrap();
 
@@ -210,36 +310,8 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
 
         (curr.idx, pos)
     }
-}
 
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn foo() {
-        let mut map = HashMap::<u32, u32>::new();
-        match map.entry(1) {
-            Entry::Occupied(mut e) => {
-                *e.get_mut() += 2;
-            }
-            Entry::Vacant(e) => {
-                e.insert(2);
-            }
-        };
-
-        println!("map: {:?}", map);
-        match map.entry(1) {
-            Entry::Occupied(mut e) => {
-                *e.get_mut() += 2;
-            }
-            Entry::Vacant(e) => {
-                e.insert(2);
-            }
-        };
-
-        println!("map: {:?}", map)
+    pub fn empty(&self) -> bool {
+        return self.arena.get(self.root).unwrap().branch_support == 0;
     }
 }
-
