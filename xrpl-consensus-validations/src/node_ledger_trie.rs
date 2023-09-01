@@ -31,7 +31,7 @@ impl<T: Ledger> Default for Node<T> {
 impl<T: Ledger> Node<T> {
     pub fn new(ledger: T) -> Self {
         Node {
-            span: Span::new(ledger),
+            span: Span::from(ledger),
             tip_support: 1,
             branch_support: 1,
             children: vec![],
@@ -91,8 +91,8 @@ impl<T: Ledger> LedgerTrie<T> for NodeLedgerTrie<T> {
         //  prefix | newSuffix
 
         let prefix = loc.borrow().span.before(diff_seq);
-        let old_suffix = loc.borrow().span.from(diff_seq);
-        let new_suffix = Span::new(*ledger).from(diff_seq);
+        let old_suffix = loc.borrow().span.after(diff_seq);
+        let new_suffix = Span::from(*ledger).after(diff_seq);
 
         if let Some(old_suffix) = old_suffix {
             // Have

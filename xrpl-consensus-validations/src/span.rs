@@ -36,12 +36,23 @@ pub struct Span<T: Ledger> {
     ledger: T
 }
 
-impl<T: Ledger> Span<T> {
-    pub fn new(ledger: T) -> Span<T> {
+impl<T: Ledger> From<T> for Span<T> {
+    fn from(value: T) -> Span<T> {
         Span {
             start: 0,
-            end: ledger.seq() + 1,
-            ledger
+            end: value.seq() + 1,
+            ledger: value
+        }
+    }
+}
+
+impl<T: Ledger> Span<T> {
+
+    fn _new(start: LedgerIndex, end: LedgerIndex, ledger: T) -> Self {
+        Span {
+            start,
+            end,
+            ledger,
         }
     }
 
@@ -53,36 +64,55 @@ impl<T: Ledger> Span<T> {
         self.end
     }
 
-    pub fn from(&self, spot: LedgerIndex) -> Option<Span<T>> {
-        todo!()
+    pub fn after(&self, spot: LedgerIndex) -> Option<Span<T>> {
+        self._sub(spot, self.end)
     }
 
     pub fn before(&self, spot: LedgerIndex) -> Option<Span<T>> {
-        todo!()
+        self._sub(self.start, spot)
     }
 
     pub fn start_id(&self) -> T::IdType {
-        todo!()
+        self.ledger.get_ancestor(self.start)
     }
 
     pub fn diff(&self, other: &T) -> LedgerIndex {
-        todo!()
+        self._clamp(self.ledger.mismatch(other))
     }
 
     pub fn tip(&self) -> SpanTip<T> {
-        todo!()
+        let tip_seq = self.end - 1;
+        SpanTip::new(tip_seq, self.ledger.get_ancestor(tip_seq), self.ledger)
     }
 
     fn _clamp(&self, seq: LedgerIndex) -> LedgerIndex {
-        todo!()
+        std::cmp::min(std::cmp::max(self.start, seq), self.end)
     }
 
     fn _sub(&self, from: LedgerIndex, to: LedgerIndex) -> Option<Span<T>> {
-        todo!()
+        let new_from = self._clamp(from);
+        let new_to = self._clamp(to);
+        if new_from < new_to {
+            return Some(Span::_new(new_from, new_to, self.ledger));
+        }
+        None
     }
 
     fn merge(a: &Span<T>, b: Span<T>) -> Span<T> {
-        todo!()
+        // Return combined span, using ledger_ from higher sequence span
+        if a.end < b.end {
+            return Span::_new(
+                std::cmp::min(a.start, b.start),
+                b.end,
+                b.ledger
+            );
+        }
+
+        return Span::_new(
+            std::cmp::min(a.start, b.start),
+            a.end,
+            a.ledger
+        )
     }
 }
 

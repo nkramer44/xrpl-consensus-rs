@@ -21,7 +21,7 @@ impl<T: Ledger> Node<T> {
     pub fn new(idx: Index, ledger: T) -> Self {
         Node {
             idx,
-            span: Span::new(ledger),
+            span: Span::from(ledger),
             tip_support: 1,
             branch_support: 1,
             children: vec![],
@@ -97,8 +97,8 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
         //  a b c  | g h i
         //  prefix | newSuffix
         let prefix = loc.span.before(diff_seq);
-        let old_suffix = loc.span.from(diff_seq);
-        let new_suffix = Span::new(*ledger).from(diff_seq);
+        let old_suffix = loc.span.after(diff_seq);
+        let new_suffix = Span::from(*ledger).after(diff_seq);
 
         if let Some(old_suffix) = old_suffix {
             // Have

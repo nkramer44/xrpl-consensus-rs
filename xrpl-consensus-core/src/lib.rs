@@ -12,6 +12,8 @@ pub trait Ledger: Copy + Clone {
     fn get_ancestor(&self, seq: LedgerIndex) -> Self::IdType;
 
     fn make_genesis() -> Self;
+
+    fn mismatch(&self, other: &Self) -> LedgerIndex;
 }
 
 pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone {
