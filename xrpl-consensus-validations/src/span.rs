@@ -29,6 +29,7 @@ impl<T: Ledger> SpanTip<T> {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Span<T: Ledger> {
     start: LedgerIndex,
     end: LedgerIndex,
@@ -43,7 +44,6 @@ impl<T: Ledger> Span<T> {
             ledger
         }
     }
-
 
     pub fn start(&self) -> LedgerIndex {
         self.start

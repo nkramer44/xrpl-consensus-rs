@@ -8,5 +8,5 @@ pub mod validation_params;
 pub mod seq_enforcer;
 pub mod span;
 pub mod node_ledger_trie;
-pub mod node_ledger_trie2;
+pub mod arena_ledger_trie;
 
