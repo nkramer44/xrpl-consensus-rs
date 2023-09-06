@@ -248,21 +248,6 @@ impl LedgerOracle {
             }
         );
 
-        /*let mut next = curr.instance.clone();
-        next.txs.extend_from_slice(txs.as_slice());
-        next.seq = curr.seq() + 1;
-        next.close_time_resolution = close_time_resolution;
-        next.close_time_agree = next.close_time.unwrap() != UNIX_EPOCH;
-        if next.close_time_agree {
-            next.close_time = Some(effective_close_time(consensus_close_time, close_time_resolution, &next.close_time.unwrap()));
-        } else {
-            next.close_time = Some(curr.close_time().unwrap() + Duration::from_secs(1));
-        }
-
-        next.parent_close_time = curr.close_time();
-        next.parent_id = curr.id();
-        next.ancestors.push(curr.id());*/
-
         let id = if self.instances.contains_left(&next) {
             *self.instances.get_by_left(&next).unwrap()
         } else {
@@ -378,6 +363,7 @@ impl LedgerHistoryHelper {
             return ledger.clone();
         }
 
+        assert!(self.seen.insert(s.chars().last().unwrap()));
         let parent = self.get_or_create(&s[0..s.len() - 1]);
         self.next_tx += 1;
         let new_ledger = self.oracle.accept(parent.as_ref(), Tx::new(self.next_tx));
@@ -394,11 +380,28 @@ mod tests {
     fn create_ledgers() {
         let mut helper = LedgerHistoryHelper::new();
         let ledger = helper.get_or_create("abc");
+        assert_eq!(helper.ledgers.len(), 4);
+        assert!(helper.ledgers.contains_key(""));
+        assert!(helper.ledgers.contains_key("a"));
+        assert!(helper.ledgers.contains_key("ab"));
+        assert!(helper.ledgers.contains_key("abc"));
 
         let ledger = helper.get_or_create("abc");
+        assert_eq!(helper.ledgers.len(), 4);
+        assert!(helper.ledgers.contains_key(""));
+        assert!(helper.ledgers.contains_key("a"));
+        assert!(helper.ledgers.contains_key("ab"));
+        assert!(helper.ledgers.contains_key("abc"));
 
 
         let ledger = helper.get_or_create("abcdef");
-
+        assert_eq!(helper.ledgers.len(), 7);
+        assert!(helper.ledgers.contains_key(""));
+        assert!(helper.ledgers.contains_key("a"));
+        assert!(helper.ledgers.contains_key("ab"));
+        assert!(helper.ledgers.contains_key("abc"));
+        assert!(helper.ledgers.contains_key("abcd"));
+        assert!(helper.ledgers.contains_key("abcde"));
+        assert!(helper.ledgers.contains_key("abcdef"));
     }
 }
