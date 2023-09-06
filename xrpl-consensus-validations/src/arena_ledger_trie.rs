@@ -67,22 +67,12 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
 
         let mut inc_node_idx = Some(loc_idx);
 
-        // Insert a new, basically empty, Node and save its Index.
-        let new_node_idx = self.arena.insert_with(|idx| {
-            let new_node = Node::with_index(idx);
-            new_node
-        });
-
-        // Get a mutable reference to both the loc node and new node we inserted above.
+        // Insert a new, basically empty, Node and also get a mutable reference to both the loc node
+        // and new node we inserted.
         // We have to do it this way because we need a mutable reference to both, but
         // cannot cannot call self.arena.get_mut twice without having two simultaneous
         // mutable borrows of self.arena, which would break Rust's ownership rules.
-        let (loc, new_node) = self.arena.get2_mut(loc_idx, new_node_idx);
-
-
-        // We know they exist because we got them in self.find and we just inserted new_node
-        let loc = loc.unwrap();
-        let new_node = new_node.unwrap();
+        let (loc, new_node) = self._add_empty_and_get(loc_idx);
 
         let loc_idx = loc.idx;
         // loc->span has the longest common prefix with Span{ledger} of all
@@ -128,9 +118,10 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
 
             // loc truncates to prefix and new_node is its child
             loc.span = prefix.unwrap();
-            loc.children.push(new_node_idx);
+            loc.children.push(new_node.idx);
             loc.tip_support = 0;
 
+            let new_node_idx = new_node.idx;
             // Update each child node's parent field to point to new_node.
             loc_children.iter()
                 .for_each(|child_idx| {
@@ -147,16 +138,20 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
             //  abc -> ...
             //     \-> def
 
-            // Unfortunately we need to get loc and new_node again here because the mutable
+            // Insert a new, basically empty, Node and save its Index.
+            let new_node_idx = self.arena.insert_with(|idx| {
+                let new_node = Node::with_index(idx);
+                new_node
+            });
+
+            // Unfortunately we need to get loc and create a new node again here because the mutable
             // borrow of self.arena created on the initial call to get2_mut can't outlive
             // the mutable borrow of arena when we update the children nodes.
-            let (loc, new_node) = self.arena.get2_mut(loc_idx, new_node_idx);
-            let loc = loc.unwrap();
-            let new_node = new_node.unwrap();
+            let (loc, new_node) = self._add_empty_and_get(loc_idx);
             new_node.span = new_suffix;
             new_node.parent = Some(loc_idx);
-            inc_node_idx = Some(new_node_idx);
-            loc.children.push(new_node_idx);
+            inc_node_idx = Some(new_node.idx);
+            loc.children.push(new_node.idx);
         }
 
         // Update branch support all the way up the trie
@@ -327,6 +322,17 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
             arena,
             seq_support: Default::default(),
         }
+    }
+
+    fn _add_empty_and_get(&mut self, loc_idx: Index) -> (&mut Node<T>, &mut Node<T>) {
+        let new_node_idx = self.arena.insert_with(|idx| {
+            let new_node = Node::with_index(idx);
+            new_node
+        });
+
+        let (loc, new_node) = self.arena.get2_mut(loc_idx, new_node_idx);
+
+        (loc.unwrap(), new_node.unwrap())
     }
 
     fn _find_by_ledger_id(&self, ledger_id: T::IdType, parent: Option<&Index>) -> Option<Index> {
