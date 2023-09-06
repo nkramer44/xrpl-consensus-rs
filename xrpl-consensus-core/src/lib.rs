@@ -1,7 +1,7 @@
 pub type LedgerIndex = u32;
 
-pub trait Ledger: Copy + Clone {
-    type IdType: LedgerId;
+pub trait Ledger: Clone {
+    type IdType: Eq + PartialEq + Ord + PartialOrd + Copy + Clone;
 
     fn id(&self) -> Self::IdType;
 

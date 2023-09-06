@@ -10,3 +10,6 @@ pub mod span;
 pub mod node_ledger_trie;
 pub mod arena_ledger_trie;
 
+#[cfg(test)]
+mod test_utils;
+

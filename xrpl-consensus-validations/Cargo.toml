@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 xrpl-consensus-core = { workspace = true }
 generational-arena = "0.2.9"
+once_cell = { workspace = true }
+derivative = "2.2.0"
+bimap = "0.6.3"

@@ -97,7 +97,7 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
         //  prefix | newSuffix
         let prefix = loc.span.before(diff_seq);
         let old_suffix = loc.span.after(diff_seq);
-        let new_suffix = Span::from(*ledger).after(diff_seq);
+        let new_suffix = Span::from(ledger.clone()).after(diff_seq);
 
         if let Some(old_suffix) = old_suffix {
             // Have

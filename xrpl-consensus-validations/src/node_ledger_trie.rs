@@ -92,7 +92,7 @@ impl<T: Ledger> LedgerTrie<T> for NodeLedgerTrie<T> {
 
         let prefix = loc.borrow().span.before(diff_seq);
         let old_suffix = loc.borrow().span.after(diff_seq);
-        let new_suffix = Span::from(*ledger).after(diff_seq);
+        let new_suffix = Span::from(ledger.clone()).after(diff_seq);
 
         if let Some(old_suffix) = old_suffix {
             // Have

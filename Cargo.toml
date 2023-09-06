@@ -15,3 +15,4 @@ rust-version = "1.64"
 
 [workspace.dependencies]
 xrpl-consensus-core = {path = "xrpl-consensus-core"}
+once_cell = "1.18.0"

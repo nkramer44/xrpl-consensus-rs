@@ -82,7 +82,7 @@ impl<T: Ledger> Span<T> {
 
     pub fn tip(&self) -> SpanTip<T> {
         let tip_seq = self.end - 1;
-        SpanTip::new(tip_seq, self.ledger.get_ancestor(tip_seq), self.ledger)
+        SpanTip::new(tip_seq, self.ledger.get_ancestor(tip_seq), self.ledger.clone())
     }
 
     fn _clamp(&self, seq: LedgerIndex) -> LedgerIndex {
@@ -93,7 +93,7 @@ impl<T: Ledger> Span<T> {
         let new_from = self._clamp(from);
         let new_to = self._clamp(to);
         if new_from < new_to {
-            return Some(Span::_new(new_from, new_to, self.ledger));
+            return Some(Span::_new(new_from, new_to, self.ledger.clone()));
         }
         None
     }
@@ -111,7 +111,7 @@ impl<T: Ledger> Span<T> {
         return Span::_new(
             std::cmp::min(a.start, b.start),
             a.end,
-            a.ledger
+            a.ledger.clone()
         )
     }
 }
