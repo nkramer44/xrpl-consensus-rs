@@ -37,7 +37,7 @@ pub(crate) struct LedgerInstance {
     seq: LedgerIndex,
     txs: TxSetType,
     close_time_resolution: Duration,
-    close_time: Option<SystemTime>,
+    close_time: SystemTime,
     close_time_agree: bool,
     parent_id: LedgerId,
     parent_close_time: Option<SystemTime>,
@@ -60,7 +60,7 @@ impl LedgerInstance {
             seq: 0,
             txs,
             close_time_resolution: Duration::from_secs(30),
-            close_time: Some(SystemTime::now()),
+            close_time: SystemTime::now(),
             close_time_agree: true,
             parent_id: LedgerId(0),
             parent_close_time: None,
@@ -136,7 +136,7 @@ impl SimulatedLedger {
         self.instance.close_time_agree
     }
 
-    pub fn close_time(&self) -> Option<SystemTime> {
+    pub fn close_time(&self) -> SystemTime {
         self.instance.close_time
     }
 
@@ -228,7 +228,7 @@ impl LedgerOracle {
     ) -> Rc<SimulatedLedger> {
         let mut next_txs = curr.txs().clone();
         next_txs.extend_from_slice(txs.as_slice());
-        let close_time_agree = curr.close_time().unwrap() != UNIX_EPOCH;
+        let close_time_agree = curr.close_time() != UNIX_EPOCH;
         let mut next_ancestors = curr.instance.ancestors.clone();
         next_ancestors.push(curr.id());
         let next = Rc::new(
@@ -237,13 +237,13 @@ impl LedgerOracle {
                 txs: next_txs,
                 close_time_resolution,
                 close_time: if close_time_agree {
-                    Some(effective_close_time(consensus_close_time, close_time_resolution, &curr.close_time().unwrap()))
+                    effective_close_time(consensus_close_time, close_time_resolution, &curr.close_time())
                 } else {
-                    Some(curr.close_time().unwrap() + Duration::from_secs(1))
+                    curr.close_time() + Duration::from_secs(1)
                 },
                 close_time_agree,
                 parent_id: curr.id(),
-                parent_close_time: curr.close_time(),
+                parent_close_time: Some(curr.close_time()),
                 ancestors: next_ancestors,
             }
         );
@@ -285,7 +285,7 @@ impl LedgerOracle {
             curr,
             &vec![tx],
             curr.close_time_resolution(),
-            &curr.close_time().unwrap().add(Duration::from_secs(1)),
+            &curr.close_time().add(Duration::from_secs(1)),
         )
     }
 
