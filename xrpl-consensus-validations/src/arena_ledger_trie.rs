@@ -156,7 +156,7 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
 
         // Update branch support all the way up the trie
         let count = count.unwrap_or(1);
-        self.arena.get_mut(inc_node_idx.unwrap()).unwrap().tip_support += 1;
+        self.arena.get_mut(inc_node_idx.unwrap()).unwrap().tip_support += count;
         while inc_node_idx.is_some() {
             let inc_node = self.arena.get_mut(inc_node_idx.unwrap()).unwrap();
             inc_node.branch_support += count;
@@ -289,26 +289,23 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
     }
 
     fn branch_support(&self, ledger: &T) -> u32 {
-        let loc = self._find_by_ledger_id(ledger.id(), None);
-        let loc_node = match loc {
-            None => {
+        let mut loc = self._find_by_ledger_id(ledger.id(), None);
+
+        loc.map_or_else(
+            || {
                 let (l, diff_seq) = self._find(ledger);
                 let loc_node = self.arena.get(l).unwrap();
-                if !diff_seq > ledger.seq() && ledger.seq() < loc_node.span.end() {
-                    Some(loc_node);
+                if diff_seq > ledger.seq() && ledger.seq() < loc_node.span.end() {
+                    Some(loc_node)
+                } else {
+                    None
                 }
-                None
-            }
-            Some(l) => {
-                Some(self.arena.get(l).unwrap())
-            }
-        };
-
-        loc_node.map_or_else(
+            },
+            |l| Some(self.arena.get(l).unwrap())
+        ).map_or_else(
             || 0,
-            |loc| loc.branch_support
+            |loc_node| loc_node.branch_support
         )
-
     }
 }
 
@@ -481,6 +478,48 @@ mod tests {
         assert_eq!(trie.branch_support(&abcd), 1);
         assert_eq!(trie.tip_support(&abce), 1);
         assert_eq!(trie.branch_support(&abce), 1);
+    }
+
+    #[test]
+    fn test_insert_suffix_and_uncommitted_with_existing_child() {
+        // abcd : abcde, abcf
+        let (mut trie, mut h) = setup();
+        let abcd = h.get_or_create("abcd");
+        let abcde = h.get_or_create("abcde");
+        let abcf = h.get_or_create("abcf");
+        trie.insert(&abcd, None);
+        trie.insert(&abcde, None);
+        trie.insert(&abcf, None);
+
+        let abc = h.get_or_create("abc");
+        assert_eq!(trie.tip_support(&abc), 0);
+        assert_eq!(trie.branch_support(&abc), 3);
+        assert_eq!(trie.tip_support(&abcd), 1);
+        assert_eq!(trie.branch_support(&abcd), 2);
+        assert_eq!(trie.tip_support(&abcf), 1);
+        assert_eq!(trie.branch_support(&abcf), 1);
+        assert_eq!(trie.tip_support(&abcde), 1);
+        assert_eq!(trie.branch_support(&abcde), 1);
+    }
+
+    #[test]
+    fn test_insert_multiple_counts() {
+        let (mut trie, mut h) = setup();
+        let ab = h.get_or_create("ab");
+        trie.insert(&ab, Some(4));
+        assert_eq!(trie.tip_support(&ab), 4);
+        assert_eq!(trie.branch_support(&ab), 4);
+        assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("a")), 4);
+
+        let abc = h.get_or_create("abc");
+        trie.insert(&abc, Some(2));
+        assert_eq!(trie.tip_support(&abc), 2);
+        assert_eq!(trie.branch_support(&abc), 2);
+        assert_eq!(trie.tip_support(&ab), 4);
+        assert_eq!(trie.branch_support(&ab), 6);
+        assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("a")), 6);
     }
 
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {
