@@ -84,6 +84,7 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
         let loc = loc.unwrap();
         let new_node = new_node.unwrap();
 
+        let loc_idx = loc.idx;
         // loc->span has the longest common prefix with Span{ledger} of all
         // existing nodes in the trie. The optional<Span>'s below represent
         // the possible common suffixes between loc->span and Span{ledger}.
@@ -135,7 +136,9 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
                 .for_each(|child_idx| {
                     self.arena.get_mut(*child_idx).unwrap().parent = Some(new_node_idx)
                 })
-        } else if let Some(new_suffix) = new_suffix {
+        }
+
+        if let Some(new_suffix) = new_suffix {
             // Have
             //  abc -> ...
             // Inserting
@@ -144,7 +147,14 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
             //  abc -> ...
             //     \-> def
 
-            new_node.parent = Some(loc.idx);
+            // Unfortunately we need to get loc and new_node again here because the mutable
+            // borrow of self.arena created on the initial call to get2_mut can't outlive
+            // the mutable borrow of arena when we update the children nodes.
+            let (loc, new_node) = self.arena.get2_mut(loc_idx, new_node_idx);
+            let loc = loc.unwrap();
+            let new_node = new_node.unwrap();
+            new_node.span = new_suffix;
+            new_node.parent = Some(loc_idx);
             inc_node_idx = Some(new_node_idx);
             loc.children.push(new_node_idx);
         }
@@ -273,9 +283,73 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
 
         return Some(curr.unwrap().span.tip())
     }
+
+    fn tip_support(&self, ledger: &T) -> u32 {
+        match self._find_by_ledger_id(ledger.id(), None) {
+            None => 0,
+            Some(loc) => {
+                self.arena.get(loc).unwrap().tip_support
+            }
+        }
+    }
+
+    fn branch_support(&self, ledger: &T) -> u32 {
+        let loc = self._find_by_ledger_id(ledger.id(), None);
+        let loc_node = match loc {
+            None => {
+                let (l, diff_seq) = self._find(ledger);
+                let loc_node = self.arena.get(l).unwrap();
+                if !diff_seq > ledger.seq() && ledger.seq() < loc_node.span.end() {
+                    Some(loc_node);
+                }
+                None
+            }
+            Some(l) => {
+                Some(self.arena.get(l).unwrap())
+            }
+        };
+
+        loc_node.map_or_else(
+            || 0,
+            |loc| loc.branch_support
+        )
+
+    }
 }
 
 impl<T: Ledger> ArenaLedgerTrie<T> {
+
+    pub fn new() -> Self {
+        let mut arena = Arena::new();
+        let root = arena.insert_with(|idx| Node::with_index(idx));
+        ArenaLedgerTrie {
+            root,
+            arena,
+            seq_support: Default::default(),
+        }
+    }
+
+    fn _find_by_ledger_id(&self, ledger_id: T::IdType, parent: Option<&Index>) -> Option<Index> {
+        let parent = match parent {
+            None => self.root,
+            Some(p) => *p
+        };
+
+        let parent_node = self.arena.get(parent).unwrap();
+        if ledger_id == parent_node.span.tip().id() {
+            return Some(parent);
+        }
+
+        for child in &parent_node.children {
+            let cl = self._find_by_ledger_id(ledger_id, Some(&child));
+            if cl.is_some() {
+                return cl;
+            }
+        }
+
+        None
+
+    }
     /// Find the node in the trie that represents the longest common ancestry
     /// with the given ledger.
     ///
@@ -311,7 +385,101 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
         (curr.idx, pos)
     }
 
+
     pub fn empty(&self) -> bool {
         return self.arena.get(self.root).unwrap().branch_support == 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::arena_ledger_trie::ArenaLedgerTrie;
+    use crate::ledger_trie::LedgerTrie;
+    use crate::test_utils::ledgers::{LedgerHistoryHelper, SimulatedLedger};
+
+    #[test]
+    fn test_insert_single_entry() {
+        let (mut trie, mut h) = setup();
+        let ledger = h.get_or_create("abc");
+        trie.insert(&ledger, None);
+        assert_eq!(trie.tip_support(&ledger), 1);
+        assert_eq!(trie.branch_support(&ledger), 1);
+
+        trie.insert(&ledger, None);
+        assert_eq!(trie.tip_support(&ledger), 2);
+        assert_eq!(trie.branch_support(&ledger), 2);
+    }
+
+    #[test]
+    fn test_insert_suffix_of_existing() {
+        let (mut trie, mut h) = setup();
+        let abc = h.get_or_create("abc");
+        trie.insert(&abc, None);
+
+        // extend with no siblings
+        let abcd = h.get_or_create("abcd");
+        trie.insert(&abcd, None);
+        assert_eq!(trie.tip_support(&abc), 1);
+        assert_eq!(trie.branch_support(&abc), 2);
+        assert_eq!(trie.tip_support(&abcd), 1);
+        assert_eq!(trie.branch_support(&abcd), 1);
+
+        // extend with existing sibling
+        let abce = h.get_or_create("abce");
+        trie.insert(&abce, None);
+        assert_eq!(trie.tip_support(&abc), 1);
+        assert_eq!(trie.branch_support(&abc), 3);
+        assert_eq!(trie.tip_support(&abcd), 1);
+        assert_eq!(trie.branch_support(&abcd), 1);
+        assert_eq!(trie.tip_support(&abce), 1);
+        assert_eq!(trie.branch_support(&abce), 1);
+    }
+
+    #[test]
+    fn test_insert_uncommitted_of_existing_node() {
+        let (mut trie, mut h) = setup();
+        let abcd = h.get_or_create("abcd");
+        trie.insert(&abcd, None);
+
+        // uncommitted with no siblings
+        let abcdf = h.get_or_create("abcdf");
+        trie.insert(&abcdf, None);
+        assert_eq!(trie.tip_support(&abcd), 1);
+        assert_eq!(trie.branch_support(&abcd), 2);
+        assert_eq!(trie.tip_support(&abcdf), 1);
+        assert_eq!(trie.branch_support(&abcdf), 1);
+
+        // uncommitted with existing child
+        let abc = h.get_or_create("abc");
+        trie.insert(&abc, None);
+        assert_eq!(trie.tip_support(&abc), 1);
+        assert_eq!(trie.branch_support(&abc), 3);
+        assert_eq!(trie.tip_support(&abcd), 1);
+        assert_eq!(trie.branch_support(&abcd), 2);
+        assert_eq!(trie.tip_support(&abcdf), 1);
+        assert_eq!(trie.branch_support(&abcdf), 1);
+    }
+
+    #[test]
+    fn test_insert_suffix_and_uncommitted_existing_node() {
+        let (mut trie, mut h) = setup();
+        let abcd = h.get_or_create("abcd");
+        trie.insert(&abcd, None);
+        let abce = h.get_or_create("abce");
+        trie.insert(&abce, None);
+
+        let abc = h.get_or_create("abc");
+        assert_eq!(trie.tip_support(&abc), 0);
+        assert_eq!(trie.branch_support(&abc), 2);
+        assert_eq!(trie.tip_support(&abcd), 1);
+        assert_eq!(trie.branch_support(&abcd), 1);
+        assert_eq!(trie.tip_support(&abce), 1);
+        assert_eq!(trie.branch_support(&abce), 1);
+    }
+
+    fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {
+        let mut trie = ArenaLedgerTrie::new();
+        let mut h = LedgerHistoryHelper::new();
+        (trie, h)
     }
 }

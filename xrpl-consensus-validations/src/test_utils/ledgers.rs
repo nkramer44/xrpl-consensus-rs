@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::ops::{Add, Div, Sub};
+use std::ops::{Add, Div, Index, IndexMut, Sub};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -208,7 +208,7 @@ pub(crate) struct LedgerOracle {
 impl LedgerOracle {
     pub fn new() -> Self {
         let mut instances = BiMap::new();
-        instances.insert(Rc::new(LedgerInstance::genesis()), LedgerId(1));
+        instances.insert(Rc::new(LedgerInstance::genesis()), LedgerId(0));
         LedgerOracle {
             instances
         }
@@ -358,7 +358,7 @@ impl LedgerHistoryHelper {
         }
     }
 
-    pub fn get_or_create(& mut self, s: &'static str) -> Rc<SimulatedLedger> {
+    pub fn get_or_create(&mut self, s: &'static str) -> Rc<SimulatedLedger> {
         if let Some(ledger) = self.ledgers.get(s) {
             return ledger.clone();
         }

@@ -128,6 +128,14 @@ impl<T: Ledger> LedgerTrie<T> for NodeLedgerTrie<T> {
     fn get_preferred(&self, largest_issued: LedgerIndex) -> Option<SpanTip<T>> {
         todo!()
     }
+
+    fn tip_support(&self, ledger: &T) -> u32 {
+        todo!()
+    }
+
+    fn branch_support(&self, ledger: &T) -> u32 {
+        todo!()
+    }
 }
 
 impl<T: Ledger> NodeLedgerTrie<T> {
