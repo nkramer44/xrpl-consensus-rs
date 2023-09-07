@@ -522,6 +522,40 @@ mod tests {
         assert_eq!(trie.branch_support(&h.get_or_create("a")), 6);
     }
 
+    #[test]
+    fn test_support() {
+        let (mut trie, mut h) = setup();
+        assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("axy")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("axy")), 0);
+
+        let abc = h.get_or_create("abc");
+        trie.insert(&abc, None);
+        assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.tip_support(&h.get_or_create("abcd")), 0);
+
+        assert_eq!(trie.branch_support(&h.get_or_create("a")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abcd")), 0);
+
+        trie.insert(&h.get_or_create("abe"), None);
+        assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.tip_support(&h.get_or_create("abe")), 1);
+
+        assert_eq!(trie.branch_support(&h.get_or_create("a")), 2);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 2);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abe")), 1);
+
+        // TODO: Add remove part once we implement remove.
+    }
+
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {
         let mut trie = ArenaLedgerTrie::new();
         let mut h = LedgerHistoryHelper::new();

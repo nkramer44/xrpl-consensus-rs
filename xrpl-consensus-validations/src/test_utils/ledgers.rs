@@ -165,13 +165,14 @@ impl Ledger for SimulatedLedger {
     }
 
     fn get_ancestor(&self, seq: LedgerIndex) -> Self::IdType {
+        if seq > self.seq() {
+            panic!("BLAH")
+        }
         if seq == self.seq() {
             return self.id();
         }
 
-        // TODO: Is this right? We are treating seq and ancestor ID as the same, but
-        //   that seems to be the way C++ does it
-        *self.instance.ancestors.iter().find(|&ancestor| ancestor.0 == seq).unwrap()
+        *self.instance.ancestors.get(seq as usize).unwrap()
     }
 
     fn make_genesis() -> Self {
@@ -221,29 +222,29 @@ impl LedgerOracle {
 
     pub fn accept_with_times(
         &mut self,
-        curr: &SimulatedLedger,
+        parent: &SimulatedLedger,
         txs: &TxSetType,
         close_time_resolution: Duration,
         consensus_close_time: &SystemTime,
     ) -> Rc<SimulatedLedger> {
-        let mut next_txs = curr.txs().clone();
+        let mut next_txs = parent.txs().clone();
         next_txs.extend_from_slice(txs.as_slice());
-        let close_time_agree = curr.close_time() != UNIX_EPOCH;
-        let mut next_ancestors = curr.instance.ancestors.clone();
-        next_ancestors.push(curr.id());
+        let close_time_agree = parent.close_time() != UNIX_EPOCH;
+        let mut next_ancestors = parent.instance.ancestors.clone();
+        next_ancestors.push(parent.id());
         let next = Rc::new(
             LedgerInstance {
-                seq: curr.seq() + 1,
+                seq: parent.seq() + 1,
                 txs: next_txs,
                 close_time_resolution,
                 close_time: if close_time_agree {
-                    effective_close_time(consensus_close_time, close_time_resolution, &curr.close_time())
+                    effective_close_time(consensus_close_time, close_time_resolution, &parent.close_time())
                 } else {
-                    curr.close_time() + Duration::from_secs(1)
+                    parent.close_time() + Duration::from_secs(1)
                 },
                 close_time_agree,
-                parent_id: curr.id(),
-                parent_close_time: Some(curr.close_time()),
+                parent_id: parent.id(),
+                parent_close_time: Some(parent.close_time()),
                 ancestors: next_ancestors,
             }
         );
@@ -252,12 +253,12 @@ impl LedgerOracle {
             *self.instances.get_by_left(&next).unwrap()
         } else {
             let id = self.next_id();
-            let inserted = self.instances.insert(next, id);
+            let inserted = self.instances.insert(next.clone(), id);
             id
         };
         return Rc::new(SimulatedLedger::new(
             id,
-            self.instances.get_by_right(&id).unwrap().clone(),
+            next.clone(),
         ));
     }
 
@@ -366,7 +367,7 @@ impl LedgerHistoryHelper {
         assert!(self.seen.insert(s.chars().last().unwrap()));
         let parent = self.get_or_create(&s[0..s.len() - 1]);
         self.next_tx += 1;
-        let new_ledger = self.oracle.accept(parent.as_ref(), Tx::new(self.next_tx));
+        let new_ledger = self.oracle.accept(&parent, Tx::new(self.next_tx));
         self.ledgers.insert(s, new_ledger.clone());
         new_ledger.clone()
     }
