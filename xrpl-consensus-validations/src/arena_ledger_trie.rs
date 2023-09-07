@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{BTreeMap};
+use std::collections::btree_map::Entry;
 
 use generational_arena::{Arena, Index};
 
@@ -51,12 +51,16 @@ impl<T: Ledger> Node<T> {
             parent: None,
         }
     }
+
+    pub fn erase(&mut self, child: Index) {
+        self.children.swap_remove(self.children.iter().position(|c| *c == child).unwrap());
+    }
 }
 
 pub struct ArenaLedgerTrie<T: Ledger> {
     root: Index,
     arena: Arena<Node<T>>,
-    seq_support: HashMap<LedgerIndex, u32>,
+    seq_support: BTreeMap<LedgerIndex, u32>, // Needs to be ordered
 }
 
 impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
@@ -174,6 +178,78 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
         }
     }
 
+    fn remove(&mut self, ledger: &T, count: Option<u32>) -> bool {
+        let loc_idx = self._find_by_ledger_id(ledger.id(), None);
+        let loc_node = loc_idx
+            .map(|i| self.arena.get_mut(i).unwrap());
+
+        // Must be exact match with tip support
+        if let Some(l) = &loc_node {
+            if l.tip_support == 0 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        let loc_node = loc_node.unwrap();
+
+        // Have to save this for later when we try to merge/erase nodes, otherwise we get a double
+        // mutable borrow
+        // let parent_idx = loc_node.parent;
+
+        let count = std::cmp::min(count.unwrap_or(1), loc_node.tip_support);
+        loc_node.tip_support -= count;
+
+        let support = self.seq_support.get_mut(&ledger.seq()).unwrap();
+        assert!(*support >= count);
+        *support -= count;
+        if *support == 0 {
+            self.seq_support.remove(&ledger.seq()).unwrap();
+        }
+
+        let mut dec_node_idx = loc_idx;
+        while dec_node_idx.is_some() {
+            let dec_node = self.arena.get_mut(dec_node_idx.unwrap()).unwrap();
+            dec_node.branch_support -= count;
+            dec_node_idx = dec_node.parent;
+        }
+
+        let mut loc_idx = loc_idx.unwrap();
+
+        while loc_idx != self.root {
+            let parent_idx = self.arena.get(loc_idx).unwrap().parent.unwrap();
+            let (loc_node, parent) = self.arena.get2_mut(loc_idx, parent_idx);
+            let loc_node = loc_node.unwrap();
+
+            let loc_span = loc_node.span.clone();
+            if loc_node.tip_support != 0 {
+                break;
+            }
+
+            let parent_node = parent.unwrap();
+            if loc_node.children.is_empty() {
+                // this node can be erased.
+                parent_node.erase(loc_idx);
+            } else if loc_node.children.len() == 1 {
+                // This node can be combined with its child
+                let child_idx = *loc_node.children.last().unwrap();
+                parent_node.children.push(child_idx);
+                parent_node.erase(loc_idx);
+                self.arena.remove(loc_idx);
+
+                let child_node = self.arena.get_mut(child_idx).unwrap();
+                child_node.span = Span::merge(&loc_span, &child_node.span);
+                child_node.parent = Some(parent_idx);
+            } else {
+                break;
+            }
+
+            loc_idx = parent_idx;
+        }
+        true
+    }
+
     fn get_preferred(&self, largest_issued: LedgerIndex) -> Option<SpanTip<T>> {
         if self.empty() {
             return None;
@@ -185,6 +261,8 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
         let mut uncommitted: u32 = 0;
 
         let mut uncommitted_it = self.seq_support.iter();
+        let mut next = uncommitted_it.next();
+
         while curr.is_some() && !done {
             // Within a single span, the preferred by branch strategy is simply
             // to continue along the span as long as the branch support of
@@ -194,9 +272,10 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
                 // Add any initial uncommitted support prior for ledgers
                 // earlier than nextSeq or earlier than largestIssued
                 let mut next_seq = curr.unwrap().span.start() + 1;
-                while let Some((seq, support)) = uncommitted_it.next() {
+                while let Some((seq, support)) = next {
                     if *seq < std::cmp::max(next_seq, largest_issued) {
                         uncommitted += support;
+                        next = uncommitted_it.next();
                     } else {
                         break;
                     }
@@ -206,10 +285,14 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
                 while next_seq < curr.unwrap().span.end() &&
                     curr.unwrap().branch_support > uncommitted {
                     // Jump to the next seq_support change.
-                    if let Some((seq, support)) = uncommitted_it.next() {
+                    if let Some((seq, support)) = next {
                         if *seq < curr.unwrap().span.end() {
                             next_seq = seq + 1;
                             uncommitted += support;
+                            next = uncommitted_it.next();
+                        } else {
+                            // Otherwise we jump to the end of the span
+                            next_seq = curr.unwrap().span.end();
                         }
                     } else {
                         // Otherwise we jump to the end of the span
@@ -396,6 +479,7 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
 
 #[cfg(test)]
 mod tests {
+    use xrpl_consensus_core::Ledger;
     use crate::arena_ledger_trie::ArenaLedgerTrie;
     use crate::ledger_trie::LedgerTrie;
     use crate::test_utils::ledgers::{LedgerHistoryHelper, SimulatedLedger};
@@ -523,6 +607,121 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_not_in_trie() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+
+        assert!(!trie.remove(&h.get_or_create("ab"), None));
+        assert!(!trie.remove(&h.get_or_create("a"), None));
+    }
+
+    #[test]
+    fn test_remove_in_trie_with_zero_tip() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abcd"), None);
+        trie.insert(&h.get_or_create("abce"), None);
+
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
+
+        assert!(!trie.remove(&h.get_or_create("abc"), None));
+
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
+    }
+
+    #[test]
+    fn test_remove_with_gt_one_tip_support() {
+        let (mut trie, mut h) = setup();
+
+        trie.insert(&h.get_or_create("abc"), Some(2));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 2);
+        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+
+        trie.insert(&h.get_or_create("abc"), Some(1));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 2);
+        assert!(trie.remove(&h.get_or_create("abc"), Some(2)));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+
+        trie.insert(&h.get_or_create("abc"), Some(3));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 3);
+        assert!(trie.remove(&h.get_or_create("abc"), Some(300)));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+    }
+
+    #[test]
+    fn test_remove_with_one_tip_support_no_children() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("ab"), None);
+        trie.insert(&h.get_or_create("abc"), None);
+
+        assert_eq!(trie.tip_support(&h.get_or_create("ab")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 2);
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
+
+        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert_eq!(trie.tip_support(&h.get_or_create("ab")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 1);
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 0);
+    }
+
+    #[test]
+    fn test_remove_with_one_tip_support_one_child() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("ab"), None);
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
+        assert_eq!(trie.tip_support(&h.get_or_create("abcd")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abcd")), 1);
+
+        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.tip_support(&h.get_or_create("abcd")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abcd")), 1);
+    }
+
+    #[test]
+    fn test_remove_with_one_tip_support_more_than_one_child() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("ab"), None);
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+        trie.insert(&h.get_or_create("abce"), None);
+
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 3);
+
+        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
+    }
+
+    #[test]
+    fn test_remove_with_one_tip_support_parent_compaction() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("ab"), None);
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abd"), None);
+
+        assert!(trie.remove(&h.get_or_create("ab"), None));
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.tip_support(&h.get_or_create("abd")), 1);
+        assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 2);
+
+        trie.remove(&h.get_or_create("abd"), None);
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 1);
+    }
+
+    #[test]
     fn test_support() {
         let (mut trie, mut h) = setup();
         assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
@@ -553,7 +752,63 @@ mod tests {
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abe")), 1);
 
-        // TODO: Add remove part once we implement remove.
+        let removed = trie.remove(&h.get_or_create("abc"), None);
+        assert!(removed);
+        assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.tip_support(&h.get_or_create("abe")), 1);
+
+        assert_eq!(trie.branch_support(&h.get_or_create("a")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("ab")), 1);
+        assert_eq!(trie.branch_support(&h.get_or_create("abc")), 0);
+        assert_eq!(trie.branch_support(&h.get_or_create("abe")), 1);
+    }
+
+    #[test]
+    fn test_get_preferred_empty_trie() {
+        let trie = ArenaLedgerTrie::<SimulatedLedger>::new();
+        assert!(trie.get_preferred(0).is_none());
+        assert!(trie.get_preferred(2).is_none());
+    }
+
+    #[test]
+    fn test_get_preferred_genesis_support_not_empty() {
+        let (mut trie, mut h) = setup();
+        let genesis = h.get_or_create("");
+        trie.insert(&genesis, None);
+        let preferred = trie.get_preferred(0);
+        assert!(preferred.is_some());
+        assert_eq!(preferred.unwrap().id(), genesis.id());
+
+        assert!(trie.remove(&genesis, None));
+        let preferred = trie.get_preferred(0);
+        assert!(preferred.is_none());
+
+        assert!(!trie.remove(&genesis, None));
+    }
+
+    #[test]
+    fn test_get_preferred_single_node_no_children() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        let preferred = trie.get_preferred(3);
+        assert!(preferred.is_some());
+        assert_eq!(preferred.unwrap().id(), h.get_or_create("abc").id());
+    }
+
+    #[test]
+    fn test_get_preferred_single_node_smaller_child_support() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+        let preferred = trie.get_preferred(3);
+        assert!(preferred.is_some());
+        assert_eq!(preferred.unwrap().id(), h.get_or_create("abc").id());
+
+        let preferred = trie.get_preferred(4);
+        assert!(preferred.is_some());
+        assert_eq!(preferred.unwrap().id(), h.get_or_create("abc").id());
     }
 
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {

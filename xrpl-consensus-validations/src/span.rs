@@ -98,13 +98,13 @@ impl<T: Ledger> Span<T> {
         None
     }
 
-    fn merge(a: &Span<T>, b: Span<T>) -> Span<T> {
+    pub fn merge(a: &Span<T>, b: &Span<T>) -> Span<T> {
         // Return combined span, using ledger_ from higher sequence span
         if a.end < b.end {
             return Span::_new(
                 std::cmp::min(a.start, b.start),
                 b.end,
-                b.ledger
+                b.ledger.clone()
             );
         }
 
