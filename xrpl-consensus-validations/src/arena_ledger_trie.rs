@@ -323,15 +323,15 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
                 //  we'd have a mutable reference to self.arena at the same time as having
                 //  a shared reference to self.arena. Therefore, this code sorts a temporary
                 //  clone of curr.children but does not update curr.children
-                let mut children_to_sort = curr.unwrap().children[2..].to_vec();
+                let mut children_to_sort = curr.unwrap().children.clone();
                 children_to_sort
                     .sort_by(|&index1, &index2| {
                         let node1 = self.arena.get(index1).unwrap();
                         let node2 = self.arena.get(index2).unwrap();
-                        let cmp = node1.branch_support.cmp(&node2.branch_support);
+                        let cmp = node2.branch_support.cmp(&node1.branch_support);
                         match cmp {
                             Ordering::Equal => {
-                                node1.span.start_id().cmp(&node2.span.start_id())
+                                node2.span.start_id().cmp(&node1.span.start_id())
                             }
                             _ => cmp
                         }
@@ -359,7 +359,7 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
             }
         }
 
-        return Some(curr.unwrap().span.tip())
+        return Some(curr.unwrap().span.tip());
     }
 
     fn tip_support(&self, ledger: &T) -> u32 {
@@ -384,16 +384,15 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
                     None
                 }
             },
-            |l| Some(self.arena.get(l).unwrap())
+            |l| Some(self.arena.get(l).unwrap()),
         ).map_or_else(
             || 0,
-            |loc_node| loc_node.branch_support
+            |loc_node| loc_node.branch_support,
         )
     }
 }
 
 impl<T: Ledger> ArenaLedgerTrie<T> {
-
     pub fn new() -> Self {
         let mut arena = Arena::new();
         let root = arena.insert_with(|idx| Node::with_index(idx));
@@ -434,7 +433,6 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
         }
 
         None
-
     }
     /// Find the node in the trie that represents the longest common ancestry
     /// with the given ledger.
@@ -777,13 +775,10 @@ mod tests {
         let (mut trie, mut h) = setup();
         let genesis = h.get_or_create("");
         trie.insert(&genesis, None);
-        let preferred = trie.get_preferred(0);
-        assert!(preferred.is_some());
-        assert_eq!(preferred.unwrap().id(), genesis.id());
+        assert_eq!(trie.get_preferred(0).unwrap().id(), genesis.id());
 
         assert!(trie.remove(&genesis, None));
-        let preferred = trie.get_preferred(0);
-        assert!(preferred.is_none());
+        assert!(trie.get_preferred(0).is_none());
 
         assert!(!trie.remove(&genesis, None));
     }
@@ -792,9 +787,7 @@ mod tests {
     fn test_get_preferred_single_node_no_children() {
         let (mut trie, mut h) = setup();
         trie.insert(&h.get_or_create("abc"), None);
-        let preferred = trie.get_preferred(3);
-        assert!(preferred.is_some());
-        assert_eq!(preferred.unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
     }
 
     #[test]
@@ -802,13 +795,199 @@ mod tests {
         let (mut trie, mut h) = setup();
         trie.insert(&h.get_or_create("abc"), None);
         trie.insert(&h.get_or_create("abcd"), None);
-        let preferred = trie.get_preferred(3);
-        assert!(preferred.is_some());
-        assert_eq!(preferred.unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
+    }
 
-        let preferred = trie.get_preferred(4);
-        assert!(preferred.is_some());
-        assert_eq!(preferred.unwrap().id(), h.get_or_create("abc").id());
+    #[test]
+    fn test_get_preferred_single_node_larger_child() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), Some(2));
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcd").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcd").id());
+    }
+
+    #[test]
+    fn test_get_preferred_single_node_smaller_child() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+        trie.insert(&h.get_or_create("abce"), None);
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
+
+        trie.insert(&h.get_or_create("abc"), None);
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
+    }
+
+    #[test]
+    fn test_get_preferred_single_node_smaller_children() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), Some(2));
+        trie.insert(&h.get_or_create("abce"), None);
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
+
+        trie.insert(&h.get_or_create("abcd"), None);
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcd").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcd").id());
+    }
+
+    #[test]
+    fn test_get_preferred_tie_breaker_by_id() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abcd"), Some(2));
+        trie.insert(&h.get_or_create("abce"), Some(2));
+        assert!(&h.get_or_create("abce").id() > &h.get_or_create("abcd").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abce").id());
+
+        trie.insert(&h.get_or_create("abcd"), None);
+        assert!(&h.get_or_create("abce").id() > &h.get_or_create("abcd").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcd").id());
+    }
+
+    #[test]
+    fn test_get_preferred_tie_breaker_not_needed() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+        trie.insert(&h.get_or_create("abce"), Some(2));
+
+        // abce only has a margin of 1, but it owns the tie-breaker
+        assert!(&h.get_or_create("abce").id() > &h.get_or_create("abcd").id());
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abce").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abce").id());
+
+        // Switch support from abce to abcd, tie-breaker now needed
+        trie.remove(&h.get_or_create("abce"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
+    }
+
+    #[test]
+    fn test_get_preferred_single_node_larger_grand_child() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), Some(2));
+        trie.insert(&h.get_or_create("abcde"), Some(4));
+
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcde").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcde").id());
+        assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("abcde").id());
+    }
+
+    #[test]
+    fn test_get_preferred_too_much_uncommitted_support_from_competing_branches() {
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcde"), Some(2));
+        trie.insert(&h.get_or_create("abcfg"), Some(2));
+
+        // 'de' and 'fg' are tied without 'abc' vote
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
+        assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("abc").id());
+
+        trie.remove(&h.get_or_create("abc"), None);
+        trie.insert(&h.get_or_create("abcd"), None);
+
+        // 'de' branch has 3 votes to 2, so earlier sequences see it as
+        // preferred
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcde").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcde").id());
+
+        // However, if you validated a ledger with Seq 5, potentially on
+        // a different branch, you do not yet know if they chose abcd
+        // or abcf because of you, so abc remains preferred
+        assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("abc").id());
+    }
+
+    #[test]
+    fn test_get_preferred_change_largest_seq_perspective_changes_preferred_branch() {
+        /// Build the tree below with initial tip support annotated
+        ///              A
+        ///             / \
+        ///         B(1)  C(1)
+        ///        /  |   |
+        ///       H   D   F(1)
+        ///           |
+        ///           E(2)
+        ///           |
+        ///           G
+        let (mut trie, mut h) = setup();
+        trie.insert(&h.get_or_create("ab"), None);
+        trie.insert(&h.get_or_create("ac"), None);
+        trie.insert(&h.get_or_create("acf"), None);
+        trie.insert(&h.get_or_create("abde"), Some(2));
+
+        // B has more branch support
+        assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("ab").id());
+
+        // But if you last validated D,F or E, you do not yet know
+        // if someone used that validation to commit to B or C
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("a").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("a").id());
+
+        /// One of E advancing to G doesn't change anything
+        ///                    A
+        ///                   / \
+        ///                B(1)  C(1)
+        ///               /  |   |
+        ///              H   D   F(1)
+        ///                  |
+        ///                  E(1)
+        ///                  |
+        ///                  G(1)
+        trie.remove(&h.get_or_create("abde"), None);
+        trie.insert(&h.get_or_create("abdeg"), None);
+
+        assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("a").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("a").id());
+        assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("a").id());
+
+        /// C advancing to H does advance the seq 3 preferred ledger
+        ///                    A
+        ///                   / \
+        ///                B(1)  C
+        ///               /  |   |
+        ///              H(1)D   F(1)
+        ///                  |
+        ///                  E(1)
+        ///                  |
+        ///                  G(1)
+        ///
+        trie.remove(&h.get_or_create("ac"), None);
+        trie.insert(&h.get_or_create("abh"), None);
+        assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("a").id());
+        assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("a").id());
+
+        /// F advancing to E also moves the preferred ledger forward
+        ///                    A
+        ///                   / \
+        ///                B(1)  C
+        ///               /  |   |
+        ///              H(1)D   F
+        ///                  |
+        ///                  E(2)
+        ///                  |
+        ///                  G(1)
+        trie.remove(&h.get_or_create("acf"), None);
+        trie.insert(&h.get_or_create("abde"), None);
+        assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("abde").id());
+        assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("abde").id());
+        assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abde").id());
+        assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("ab").id());
+        assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("ab").id());
     }
 
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {
