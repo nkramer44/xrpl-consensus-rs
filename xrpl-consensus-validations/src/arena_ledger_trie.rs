@@ -57,6 +57,7 @@ impl<T: Ledger> Node<T> {
     }
 }
 
+/// A `LedgerTrie` implemented using a generational arena.
 pub struct ArenaLedgerTrie<T: Ledger> {
     root: Index,
     arena: Arena<Node<T>>,
@@ -988,6 +989,48 @@ mod tests {
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abde").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("ab").id());
         assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("ab").id());
+    }
+
+    #[test]
+    fn test_empty() {
+        let (mut trie, mut h) = setup();
+        assert!(trie.empty());
+
+        trie.insert(&h.get_or_create(""), None);
+        assert!(!trie.empty());
+        trie.remove(&h.get_or_create(""), None);
+        assert!(trie.empty());
+
+        trie.insert(&h.get_or_create("abc"), None);
+        assert!(!trie.empty());
+        trie.remove(&h.get_or_create("abc"), None);
+        assert!(trie.empty());
+    }
+
+    #[test]
+    fn test_root_related() {
+        // Since the root is a special node that breaks the no-single child
+        // invariant, do some tests that exercise it.
+
+        let (mut trie, mut h) = setup();
+        let genesis = h.get_or_create("");
+        assert!(!trie.remove(&genesis, None));
+        assert_eq!(trie.branch_support(&genesis), 0);
+        assert_eq!(trie.tip_support(&genesis), 0);
+
+        let a = h.get_or_create("a");
+        trie.insert(&a, None);
+        assert_eq!(trie.branch_support(&genesis), 1);
+        assert_eq!(trie.tip_support(&genesis), 0);
+
+        let e = h.get_or_create("e");
+        trie.insert(&e, None);
+        assert_eq!(trie.branch_support(&genesis), 2);
+        assert_eq!(trie.tip_support(&genesis), 0);
+
+        assert!(trie.remove(&e, None));
+        assert_eq!(trie.branch_support(&genesis), 1);
+        assert_eq!(trie.tip_support(&genesis), 0);
     }
 
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {

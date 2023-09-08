@@ -1,5 +1,6 @@
 use xrpl_consensus_core::{Ledger, LedgerIndex};
 
+/// The tip of a span of ledger ancestry.
 pub struct SpanTip<T: Ledger> {
     /// The sequence number of the tip ledger.
     seq: LedgerIndex,
@@ -24,11 +25,17 @@ impl<T: Ledger> SpanTip<T> {
         self.seq
     }
 
+    /// Lookup the ID of an ancestor of the tip ledger by `LedgerIndex`. `seq` must be
+    /// less than or equal to the sequence number of the tip ledger.
+    ///
+    /// # Params
+    /// s - The sequence number of the ancestor.
     pub(crate) fn ancestor(&self, seq: LedgerIndex) -> T::IdType {
         self.ledger.get_ancestor(seq)
     }
 }
 
+/// Represents a span of ancestry of a ledger.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Span<T: Ledger> {
     start: LedgerIndex,
@@ -64,22 +71,28 @@ impl<T: Ledger> Span<T> {
         self.end
     }
 
+    /// Return the Span from [spot,end) or `None` if no such valid span exists.
     pub fn after(&self, spot: LedgerIndex) -> Option<Span<T>> {
         self._sub(spot, self.end)
     }
 
+    /// Return the Span from [start,spot) or `None` if no such valid span exists.
     pub fn before(&self, spot: LedgerIndex) -> Option<Span<T>> {
         self._sub(self.start, spot)
     }
 
+    /// Return the ID of the ledger that starts this span.
     pub fn start_id(&self) -> T::IdType {
         self.ledger.get_ancestor(self.start)
     }
 
+    /// Return the ledger sequence number of the first possible difference
+    /// between this span and a given ledger.
     pub fn diff(&self, other: &T) -> LedgerIndex {
         self._clamp(self.ledger.mismatch(other))
     }
 
+    /// Return The tip `SpanTip` of this span.
     pub fn tip(&self) -> SpanTip<T> {
         let tip_seq = self.end - 1;
         SpanTip::new(tip_seq, self.ledger.get_ancestor(tip_seq), self.ledger.clone())
