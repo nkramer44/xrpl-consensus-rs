@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap};
+use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use generational_arena::{Arena, Index};
@@ -373,7 +373,7 @@ impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
     }
 
     fn branch_support(&self, ledger: &T) -> u32 {
-        let mut loc = self._find_by_ledger_id(ledger.id(), None);
+        let loc = self._find_by_ledger_id(ledger.id(), None);
 
         loc.map_or_else(
             || {
@@ -474,11 +474,58 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
     pub fn empty(&self) -> bool {
         return self.arena.get(self.root).unwrap().branch_support == 0;
     }
+
+    pub fn check_invariants(&self) -> bool {
+        let mut expected_seq_support: BTreeMap<LedgerIndex, u32> = BTreeMap::new();
+
+        let mut nodes: Vec<&Node<T>> = vec![];
+        nodes.push(self.arena.get(self.root).unwrap());
+        while !nodes.is_empty() {
+            let curr = nodes.pop();
+            if let Some(curr) = curr {
+
+                // Node with 0 tip support must have multiple children
+                // unless it is the root node
+                if curr.idx != self.root && curr.tip_support == 0 && curr.children.len() < 2 {
+                    return false;
+                }
+
+                // branchSupport = tipSupport + sum(child->branchSupport)
+                let mut support = curr.tip_support;
+                if curr.tip_support != 0 {
+                    let curr_support_value = expected_seq_support.get(&(curr.span.end() - 1)).unwrap_or_else(|| &0);
+                    expected_seq_support.insert(
+                        curr.span.end() - 1,
+                        *curr_support_value + curr.tip_support
+                    );
+                }
+
+                for child in &curr.children {
+                    let child_node = self.arena.get(*child).unwrap();
+                    if child_node.parent != Some(curr.idx) {
+                        return false;
+                    }
+
+                    support += child_node.branch_support;
+                    nodes.push(child_node);
+                }
+
+                if support != curr.branch_support {
+                    return false;
+                }
+            }
+        }
+
+        let a: Vec<((&LedgerIndex, &u32), (LedgerIndex, u32))> = expected_seq_support.iter().zip(self.seq_support.clone())
+            .collect();
+        expected_seq_support == self.seq_support
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use xrpl_consensus_core::Ledger;
+
     use crate::arena_ledger_trie::ArenaLedgerTrie;
     use crate::ledger_trie::LedgerTrie;
     use crate::test_utils::ledgers::{LedgerHistoryHelper, SimulatedLedger};
@@ -487,11 +534,11 @@ mod tests {
     fn test_insert_single_entry() {
         let (mut trie, mut h) = setup();
         let ledger = h.get_or_create("abc");
-        trie.insert(&ledger, None);
+        insert(&mut trie, &ledger, None);
         assert_eq!(trie.tip_support(&ledger), 1);
         assert_eq!(trie.branch_support(&ledger), 1);
 
-        trie.insert(&ledger, None);
+        insert(&mut trie, &ledger, None);
         assert_eq!(trie.tip_support(&ledger), 2);
         assert_eq!(trie.branch_support(&ledger), 2);
     }
@@ -500,11 +547,11 @@ mod tests {
     fn test_insert_suffix_of_existing() {
         let (mut trie, mut h) = setup();
         let abc = h.get_or_create("abc");
-        trie.insert(&abc, None);
+        insert(&mut trie, &abc, None);
 
         // extend with no siblings
         let abcd = h.get_or_create("abcd");
-        trie.insert(&abcd, None);
+        insert(&mut trie, &abcd, None);
         assert_eq!(trie.tip_support(&abc), 1);
         assert_eq!(trie.branch_support(&abc), 2);
         assert_eq!(trie.tip_support(&abcd), 1);
@@ -512,7 +559,7 @@ mod tests {
 
         // extend with existing sibling
         let abce = h.get_or_create("abce");
-        trie.insert(&abce, None);
+        insert(&mut trie, &abce, None);
         assert_eq!(trie.tip_support(&abc), 1);
         assert_eq!(trie.branch_support(&abc), 3);
         assert_eq!(trie.tip_support(&abcd), 1);
@@ -525,11 +572,11 @@ mod tests {
     fn test_insert_uncommitted_of_existing_node() {
         let (mut trie, mut h) = setup();
         let abcd = h.get_or_create("abcd");
-        trie.insert(&abcd, None);
+        insert(&mut trie, &abcd, None);
 
         // uncommitted with no siblings
         let abcdf = h.get_or_create("abcdf");
-        trie.insert(&abcdf, None);
+        insert(&mut trie, &abcdf, None);
         assert_eq!(trie.tip_support(&abcd), 1);
         assert_eq!(trie.branch_support(&abcd), 2);
         assert_eq!(trie.tip_support(&abcdf), 1);
@@ -537,7 +584,7 @@ mod tests {
 
         // uncommitted with existing child
         let abc = h.get_or_create("abc");
-        trie.insert(&abc, None);
+        insert(&mut trie, &abc, None);
         assert_eq!(trie.tip_support(&abc), 1);
         assert_eq!(trie.branch_support(&abc), 3);
         assert_eq!(trie.tip_support(&abcd), 1);
@@ -550,9 +597,9 @@ mod tests {
     fn test_insert_suffix_and_uncommitted_existing_node() {
         let (mut trie, mut h) = setup();
         let abcd = h.get_or_create("abcd");
-        trie.insert(&abcd, None);
+        insert(&mut trie, &abcd, None);
         let abce = h.get_or_create("abce");
-        trie.insert(&abce, None);
+        insert(&mut trie, &abce, None);
 
         let abc = h.get_or_create("abc");
         assert_eq!(trie.tip_support(&abc), 0);
@@ -570,9 +617,9 @@ mod tests {
         let abcd = h.get_or_create("abcd");
         let abcde = h.get_or_create("abcde");
         let abcf = h.get_or_create("abcf");
-        trie.insert(&abcd, None);
-        trie.insert(&abcde, None);
-        trie.insert(&abcf, None);
+        insert(&mut trie, &abcd, None);
+        insert(&mut trie, &abcde, None);
+        insert(&mut trie, &abcf, None);
 
         let abc = h.get_or_create("abc");
         assert_eq!(trie.tip_support(&abc), 0);
@@ -589,14 +636,14 @@ mod tests {
     fn test_insert_multiple_counts() {
         let (mut trie, mut h) = setup();
         let ab = h.get_or_create("ab");
-        trie.insert(&ab, Some(4));
+        insert(&mut trie, &ab, Some(4));
         assert_eq!(trie.tip_support(&ab), 4);
         assert_eq!(trie.branch_support(&ab), 4);
         assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
         assert_eq!(trie.branch_support(&h.get_or_create("a")), 4);
 
         let abc = h.get_or_create("abc");
-        trie.insert(&abc, Some(2));
+        insert(&mut trie, &abc, Some(2));
         assert_eq!(trie.tip_support(&abc), 2);
         assert_eq!(trie.branch_support(&abc), 2);
         assert_eq!(trie.tip_support(&ab), 4);
@@ -608,22 +655,22 @@ mod tests {
     #[test]
     fn test_remove_not_in_trie() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
 
-        assert!(!trie.remove(&h.get_or_create("ab"), None));
-        assert!(!trie.remove(&h.get_or_create("a"), None));
+        assert!(!remove(&mut trie, &h.get_or_create("ab"), None));
+        assert!(!remove(&mut trie, &h.get_or_create("a"), None));
     }
 
     #[test]
     fn test_remove_in_trie_with_zero_tip() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abcd"), None);
-        trie.insert(&h.get_or_create("abce"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abce"), None);
 
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
 
-        assert!(!trie.remove(&h.get_or_create("abc"), None));
+        assert!(!remove(&mut trie, &h.get_or_create("abc"), None));
 
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
@@ -633,34 +680,34 @@ mod tests {
     fn test_remove_with_gt_one_tip_support() {
         let (mut trie, mut h) = setup();
 
-        trie.insert(&h.get_or_create("abc"), Some(2));
+        insert(&mut trie, &h.get_or_create("abc"), Some(2));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 2);
-        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert!(remove(&mut trie, &h.get_or_create("abc"), None));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
 
-        trie.insert(&h.get_or_create("abc"), Some(1));
+        insert(&mut trie, &h.get_or_create("abc"), Some(1));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 2);
-        assert!(trie.remove(&h.get_or_create("abc"), Some(2)));
+        assert!(remove(&mut trie, &h.get_or_create("abc"), Some(2)));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
 
-        trie.insert(&h.get_or_create("abc"), Some(3));
+        insert(&mut trie, &h.get_or_create("abc"), Some(3));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 3);
-        assert!(trie.remove(&h.get_or_create("abc"), Some(300)));
+        assert!(remove(&mut trie, &h.get_or_create("abc"), Some(300)));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
     }
 
     #[test]
     fn test_remove_with_one_tip_support_no_children() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("ab"), None);
-        trie.insert(&h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("ab"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
 
         assert_eq!(trie.tip_support(&h.get_or_create("ab")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("ab")), 2);
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
 
-        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert!(remove(&mut trie, &h.get_or_create("abc"), None));
         assert_eq!(trie.tip_support(&h.get_or_create("ab")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("ab")), 1);
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
@@ -670,16 +717,16 @@ mod tests {
     #[test]
     fn test_remove_with_one_tip_support_one_child() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("ab"), None);
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("ab"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
 
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
         assert_eq!(trie.tip_support(&h.get_or_create("abcd")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abcd")), 1);
 
-        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert!(remove(&mut trie, &h.get_or_create("abc"), None));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.tip_support(&h.get_or_create("abcd")), 1);
@@ -689,15 +736,15 @@ mod tests {
     #[test]
     fn test_remove_with_one_tip_support_more_than_one_child() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("ab"), None);
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
-        trie.insert(&h.get_or_create("abce"), None);
+        insert(&mut trie, &h.get_or_create("ab"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abce"), None);
 
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 3);
 
-        assert!(trie.remove(&h.get_or_create("abc"), None));
+        assert!(remove(&mut trie, &h.get_or_create("abc"), None));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 0);
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 2);
     }
@@ -705,17 +752,17 @@ mod tests {
     #[test]
     fn test_remove_with_one_tip_support_parent_compaction() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("ab"), None);
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abd"), None);
+        insert(&mut trie, &h.get_or_create("ab"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abd"), None);
 
-        assert!(trie.remove(&h.get_or_create("ab"), None));
+        assert!(remove(&mut trie, &h.get_or_create("ab"), None));
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.tip_support(&h.get_or_create("abd")), 1);
         assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
         assert_eq!(trie.branch_support(&h.get_or_create("ab")), 2);
 
-        trie.remove(&h.get_or_create("abd"), None);
+        remove(&mut trie, &h.get_or_create("abd"), None);
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("ab")), 1);
     }
@@ -729,7 +776,7 @@ mod tests {
         assert_eq!(trie.branch_support(&h.get_or_create("axy")), 0);
 
         let abc = h.get_or_create("abc");
-        trie.insert(&abc, None);
+        insert(&mut trie, &abc, None);
         assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
         assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
@@ -740,7 +787,7 @@ mod tests {
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abcd")), 0);
 
-        trie.insert(&h.get_or_create("abe"), None);
+        insert(&mut trie, &h.get_or_create("abe"), None);
         assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
         assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
         assert_eq!(trie.tip_support(&h.get_or_create("abc")), 1);
@@ -751,7 +798,7 @@ mod tests {
         assert_eq!(trie.branch_support(&h.get_or_create("abc")), 1);
         assert_eq!(trie.branch_support(&h.get_or_create("abe")), 1);
 
-        let removed = trie.remove(&h.get_or_create("abc"), None);
+        let removed = remove(&mut trie, &h.get_or_create("abc"), None);
         assert!(removed);
         assert_eq!(trie.tip_support(&h.get_or_create("a")), 0);
         assert_eq!(trie.tip_support(&h.get_or_create("ab")), 0);
@@ -775,27 +822,27 @@ mod tests {
     fn test_get_preferred_genesis_support_not_empty() {
         let (mut trie, mut h) = setup();
         let genesis = h.get_or_create("");
-        trie.insert(&genesis, None);
+        insert(&mut trie, &genesis, None);
         assert_eq!(trie.get_preferred(0).unwrap().id(), genesis.id());
 
-        assert!(trie.remove(&genesis, None));
+        assert!(remove(&mut trie, &genesis, None));
         assert!(trie.get_preferred(0).is_none());
 
-        assert!(!trie.remove(&genesis, None));
+        assert!(!remove(&mut trie, &genesis, None));
     }
 
     #[test]
     fn test_get_preferred_single_node_no_children() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
     }
 
     #[test]
     fn test_get_preferred_single_node_smaller_child_support() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
     }
@@ -803,8 +850,8 @@ mod tests {
     #[test]
     fn test_get_preferred_single_node_larger_child() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), Some(2));
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), Some(2));
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcd").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcd").id());
     }
@@ -812,13 +859,13 @@ mod tests {
     #[test]
     fn test_get_preferred_single_node_smaller_child() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
-        trie.insert(&h.get_or_create("abce"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abce"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
 
-        trie.insert(&h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
     }
@@ -826,13 +873,13 @@ mod tests {
     #[test]
     fn test_get_preferred_single_node_smaller_children() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), Some(2));
-        trie.insert(&h.get_or_create("abce"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), Some(2));
+        insert(&mut trie, &h.get_or_create("abce"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
 
-        trie.insert(&h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcd").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcd").id());
     }
@@ -840,12 +887,12 @@ mod tests {
     #[test]
     fn test_get_preferred_tie_breaker_by_id() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abcd"), Some(2));
-        trie.insert(&h.get_or_create("abce"), Some(2));
+        insert(&mut trie, &h.get_or_create("abcd"), Some(2));
+        insert(&mut trie, &h.get_or_create("abce"), Some(2));
         assert!(&h.get_or_create("abce").id() > &h.get_or_create("abcd").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abce").id());
 
-        trie.insert(&h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
         assert!(&h.get_or_create("abce").id() > &h.get_or_create("abcd").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcd").id());
     }
@@ -853,9 +900,9 @@ mod tests {
     #[test]
     fn test_get_preferred_tie_breaker_not_needed() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
-        trie.insert(&h.get_or_create("abce"), Some(2));
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
+        insert(&mut trie, &h.get_or_create("abce"), Some(2));
 
         // abce only has a margin of 1, but it owns the tie-breaker
         assert!(&h.get_or_create("abce").id() > &h.get_or_create("abcd").id());
@@ -863,8 +910,8 @@ mod tests {
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abce").id());
 
         // Switch support from abce to abcd, tie-breaker now needed
-        trie.remove(&h.get_or_create("abce"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
+        remove(&mut trie, &h.get_or_create("abce"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
     }
@@ -872,9 +919,9 @@ mod tests {
     #[test]
     fn test_get_preferred_single_node_larger_grand_child() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), Some(2));
-        trie.insert(&h.get_or_create("abcde"), Some(4));
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), Some(2));
+        insert(&mut trie, &h.get_or_create("abcde"), Some(4));
 
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abcde").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abcde").id());
@@ -884,17 +931,17 @@ mod tests {
     #[test]
     fn test_get_preferred_too_much_uncommitted_support_from_competing_branches() {
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcde"), Some(2));
-        trie.insert(&h.get_or_create("abcfg"), Some(2));
+        insert(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcde"), Some(2));
+        insert(&mut trie, &h.get_or_create("abcfg"), Some(2));
 
         // 'de' and 'fg' are tied without 'abc' vote
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("abc").id());
         assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("abc").id());
 
-        trie.remove(&h.get_or_create("abc"), None);
-        trie.insert(&h.get_or_create("abcd"), None);
+        remove(&mut trie, &h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abcd"), None);
 
         // 'de' branch has 3 votes to 2, so earlier sequences see it as
         // preferred
@@ -909,21 +956,21 @@ mod tests {
 
     #[test]
     fn test_get_preferred_change_largest_seq_perspective_changes_preferred_branch() {
-        /// Build the tree below with initial tip support annotated
-        ///              A
-        ///             / \
-        ///         B(1)  C(1)
-        ///        /  |   |
-        ///       H   D   F(1)
-        ///           |
-        ///           E(2)
-        ///           |
-        ///           G
+        // Build the tree below with initial tip support annotated
+        //              A
+        //             / \
+        //         B(1)  C(1)
+        //        /  |   |
+        //       H   D   F(1)
+        //           |
+        //           E(2)
+        //           |
+        //           G
         let (mut trie, mut h) = setup();
-        trie.insert(&h.get_or_create("ab"), None);
-        trie.insert(&h.get_or_create("ac"), None);
-        trie.insert(&h.get_or_create("acf"), None);
-        trie.insert(&h.get_or_create("abde"), Some(2));
+        insert(&mut trie, &h.get_or_create("ab"), None);
+        insert(&mut trie, &h.get_or_create("ac"), None);
+        insert(&mut trie, &h.get_or_create("acf"), None);
+        insert(&mut trie, &h.get_or_create("abde"), Some(2));
 
         // B has more branch support
         assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("ab").id());
@@ -934,18 +981,18 @@ mod tests {
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("a").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("a").id());
 
-        /// One of E advancing to G doesn't change anything
-        ///                    A
-        ///                   / \
-        ///                B(1)  C(1)
-        ///               /  |   |
-        ///              H   D   F(1)
-        ///                  |
-        ///                  E(1)
-        ///                  |
-        ///                  G(1)
-        trie.remove(&h.get_or_create("abde"), None);
-        trie.insert(&h.get_or_create("abdeg"), None);
+        // One of E advancing to G doesn't change anything
+        //                    A
+        //                   / \
+        //                B(1)  C(1)
+        //               /  |   |
+        //              H   D   F(1)
+        //                  |
+        //                  E(1)
+        //                  |
+        //                  G(1)
+        remove(&mut trie, &h.get_or_create("abde"), None);
+        insert(&mut trie, &h.get_or_create("abdeg"), None);
 
         assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("ab").id());
         assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("ab").id());
@@ -953,37 +1000,37 @@ mod tests {
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("a").id());
         assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("a").id());
 
-        /// C advancing to H does advance the seq 3 preferred ledger
-        ///                    A
-        ///                   / \
-        ///                B(1)  C
-        ///               /  |   |
-        ///              H(1)D   F(1)
-        ///                  |
-        ///                  E(1)
-        ///                  |
-        ///                  G(1)
-        ///
-        trie.remove(&h.get_or_create("ac"), None);
-        trie.insert(&h.get_or_create("abh"), None);
+        // C advancing to H does advance the seq 3 preferred ledger
+        //                    A
+        //                   / \
+        //                B(1)  C
+        //               /  |   |
+        //              H(1)D   F(1)
+        //                  |
+        //                  E(1)
+        //                  |
+        //                  G(1)
+        //
+        remove(&mut trie, &h.get_or_create("ac"), None);
+        insert(&mut trie, &h.get_or_create("abh"), None);
         assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("ab").id());
         assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("ab").id());
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("ab").id());
         assert_eq!(trie.get_preferred(4).unwrap().id(), h.get_or_create("a").id());
         assert_eq!(trie.get_preferred(5).unwrap().id(), h.get_or_create("a").id());
 
-        /// F advancing to E also moves the preferred ledger forward
-        ///                    A
-        ///                   / \
-        ///                B(1)  C
-        ///               /  |   |
-        ///              H(1)D   F
-        ///                  |
-        ///                  E(2)
-        ///                  |
-        ///                  G(1)
-        trie.remove(&h.get_or_create("acf"), None);
-        trie.insert(&h.get_or_create("abde"), None);
+        // F advancing to E also moves the preferred ledger forward
+        //                    A
+        //                   / \
+        //                B(1)  C
+        //               /  |   |
+        //              H(1)D   F
+        //                  |
+        //                  E(2)
+        //                  |
+        //                  G(1)
+        remove(&mut trie, &h.get_or_create("acf"), None);
+        insert(&mut trie, &h.get_or_create("abde"), None);
         assert_eq!(trie.get_preferred(1).unwrap().id(), h.get_or_create("abde").id());
         assert_eq!(trie.get_preferred(2).unwrap().id(), h.get_or_create("abde").id());
         assert_eq!(trie.get_preferred(3).unwrap().id(), h.get_or_create("abde").id());
@@ -996,14 +1043,14 @@ mod tests {
         let (mut trie, mut h) = setup();
         assert!(trie.empty());
 
-        trie.insert(&h.get_or_create(""), None);
+        insert(&mut trie, &h.get_or_create(""), None);
         assert!(!trie.empty());
-        trie.remove(&h.get_or_create(""), None);
+        remove(&mut trie, &h.get_or_create(""), None);
         assert!(trie.empty());
 
-        trie.insert(&h.get_or_create("abc"), None);
+        insert(&mut trie, &h.get_or_create("abc"), None);
         assert!(!trie.empty());
-        trie.remove(&h.get_or_create("abc"), None);
+        remove(&mut trie, &h.get_or_create("abc"), None);
         assert!(trie.empty());
     }
 
@@ -1014,28 +1061,40 @@ mod tests {
 
         let (mut trie, mut h) = setup();
         let genesis = h.get_or_create("");
-        assert!(!trie.remove(&genesis, None));
+        assert!(!remove(&mut trie, &genesis, None));
         assert_eq!(trie.branch_support(&genesis), 0);
         assert_eq!(trie.tip_support(&genesis), 0);
 
         let a = h.get_or_create("a");
-        trie.insert(&a, None);
+        insert(&mut trie, &a, None);
         assert_eq!(trie.branch_support(&genesis), 1);
         assert_eq!(trie.tip_support(&genesis), 0);
 
         let e = h.get_or_create("e");
-        trie.insert(&e, None);
+        insert(&mut trie, &e, None);
         assert_eq!(trie.branch_support(&genesis), 2);
         assert_eq!(trie.tip_support(&genesis), 0);
 
-        assert!(trie.remove(&e, None));
+        assert!(remove(&mut trie, &e, None));
         assert_eq!(trie.branch_support(&genesis), 1);
         assert_eq!(trie.tip_support(&genesis), 0);
     }
 
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {
-        let mut trie = ArenaLedgerTrie::new();
-        let mut h = LedgerHistoryHelper::new();
+        let trie = ArenaLedgerTrie::new();
+        let h = LedgerHistoryHelper::new();
         (trie, h)
     }
+
+    fn insert(trie: &mut ArenaLedgerTrie<SimulatedLedger>, ledger: &SimulatedLedger, count: Option<u32>) {
+        trie.insert(&ledger, count);
+        assert!(trie.check_invariants());
+    }
+
+    fn remove(trie: &mut ArenaLedgerTrie<SimulatedLedger>, ledger: &SimulatedLedger, count: Option<u32>) -> bool {
+        let removed = trie.remove(&ledger, count);
+        assert!(trie.check_invariants());
+        removed
+    }
+
 }

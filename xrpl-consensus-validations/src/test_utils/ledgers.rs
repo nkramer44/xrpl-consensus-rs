@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::ops::{Add, Div, Index, IndexMut, Sub};
+use std::ops::{Add, Div, Sub};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
