@@ -516,14 +516,14 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
             }
         }
 
-        let a: Vec<((&LedgerIndex, &u32), (LedgerIndex, u32))> = expected_seq_support.iter().zip(self.seq_support.clone())
-            .collect();
         expected_seq_support == self.seq_support
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rand::distributions::{Distribution, Uniform};
+    use rand::SeedableRng;
     use xrpl_consensus_core::Ledger;
 
     use crate::arena_ledger_trie::ArenaLedgerTrie;
@@ -1078,6 +1078,43 @@ mod tests {
         assert!(remove(&mut trie, &e, None));
         assert_eq!(trie.branch_support(&genesis), 1);
         assert_eq!(trie.tip_support(&genesis), 0);
+    }
+
+    #[test]
+    fn stress_test() {
+        let (mut trie, mut h) = setup();
+        // Test quasi-randomly add/remove supporting for different ledgers
+        // from a branching history.
+
+        let depth = 4;
+        let width = 4;
+        let iterations = 10000;
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let depth_dist = Uniform::<u8>::from(0..depth);
+        let width_dist = Uniform::<u8>::from(0..width);
+        let flip = Uniform::new_inclusive(0, 1);
+
+        for i in 0..iterations {
+            // pick a random ledger history
+            let mut curr = "".to_string();
+            let depth = depth_dist.sample(&mut rng);
+            let mut offset = 0;
+            for d in 0..depth {
+                let a = offset + width_dist.sample(&mut rng);
+                curr.push(a as char);
+                offset = (a + 1).overflowing_mul(width).0
+            }
+
+            // 50-50 to add or remove
+            if flip.sample(&mut rng) == 0 {
+                trie.insert(&h.get_or_create_string(curr), None);
+            } else {
+                trie.remove(&h.get_or_create_string(curr), None);
+            }
+
+            assert!(trie.check_invariants());
+        }
     }
 
     fn setup() -> (ArenaLedgerTrie<SimulatedLedger>, LedgerHistoryHelper) {

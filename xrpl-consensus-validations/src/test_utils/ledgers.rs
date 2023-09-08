@@ -343,14 +343,14 @@ fn round_close_time(close_time: &SystemTime, close_resolution: Duration) -> Syst
 pub(crate) struct LedgerHistoryHelper {
     oracle: LedgerOracle,
     next_tx: TxId,
-    ledgers: HashMap<&'static str, Rc<SimulatedLedger>>,
+    ledgers: HashMap<String, Rc<SimulatedLedger>>,
     seen: HashSet<char>,
 }
 
 impl LedgerHistoryHelper {
     pub fn new() -> Self {
         let mut ledgers = HashMap::new();
-        ledgers.insert("", Rc::new(SimulatedLedger::genesis()));
+        ledgers.insert("".to_string(), Rc::new(SimulatedLedger::genesis()));
         LedgerHistoryHelper {
             oracle: LedgerOracle::new(),
             next_tx: 0,
@@ -359,8 +359,8 @@ impl LedgerHistoryHelper {
         }
     }
 
-    pub fn get_or_create(&mut self, s: &'static str) -> Rc<SimulatedLedger> {
-        if let Some(ledger) = self.ledgers.get(s) {
+    pub fn get_or_create_string(&mut self, s: String) -> Rc<SimulatedLedger> {
+        if let Some(ledger) = self.ledgers.get(&s) {
             return ledger.clone();
         }
 
@@ -370,6 +370,10 @@ impl LedgerHistoryHelper {
         let new_ledger = self.oracle.accept(&parent, Tx::new(self.next_tx));
         self.ledgers.insert(s, new_ledger.clone());
         new_ledger.clone()
+    }
+
+    pub fn get_or_create(&mut self, s: &str) -> Rc<SimulatedLedger> {
+        self.get_or_create_string(s.to_string())
     }
 }
 
