@@ -1,7 +1,9 @@
+use std::time::SystemTime;
+
 pub type LedgerIndex = u32;
 
 pub trait Ledger: Clone {
-    type IdType: Eq + PartialEq + Ord + PartialOrd + Copy + Clone;
+    type IdType: LedgerId;
 
     fn id(&self) -> Self::IdType;
 
@@ -16,4 +18,15 @@ pub trait Ledger: Clone {
 
 pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone {
 
+}
+
+pub trait Validation: Copy + Clone {
+    type LedgerIdType: LedgerId;
+
+    fn seq(&self) -> LedgerIndex;
+    fn ledger_id(&self) -> Self::LedgerIdType;
+    fn sign_time(&self) -> SystemTime;
+    fn seen_time(&self) -> SystemTime;
+    fn cookie(&self) -> u64;
+    fn trusted(&self) -> bool;
 }

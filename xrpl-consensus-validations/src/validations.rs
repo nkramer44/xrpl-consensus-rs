@@ -1,10 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 use std::marker::PhantomData;
-use std::sync::MutexGuard;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use xrpl_consensus_core::{Ledger, LedgerIndex};
+use xrpl_consensus_core::{Ledger, LedgerIndex, Validation};
 
 use crate::adaptor::Adaptor;
 use crate::ledger_trie::LedgerTrie;
@@ -14,7 +14,21 @@ use crate::validation_params::ValidationParams;
 struct AgedUnorderedMap<K, V> {
     // TODO: This should be a port/replica of beast::aged_unordered_map
     v: PhantomData<K>,
-    k: PhantomData<V>
+    k: PhantomData<V>,
+}
+
+impl<K, V> AgedUnorderedMap<K, V> {
+    pub fn now(&self) -> Instant {
+        todo!()
+    }
+
+    pub fn get_or_insert(&mut self, k: K) -> &V {
+        todo!()
+    }
+
+    pub fn get_or_insert_mut(&mut self, k: K) -> &mut V {
+        todo!()
+    }
 }
 
 struct KeepRange {
@@ -76,7 +90,94 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
     }
 
     pub fn add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> ValidationStatus {
-        todo!()
+        if !Self::_is_current(
+            self.params(),
+            &self.adaptor().now(),
+            &validation.sign_time(),
+            &validation.seen_time()
+        ) {
+            return ValidationStatus::Stale;
+        }
+
+        // Check that validation sequence is greater than any non-expired
+        // validations sequence from that validator; if it's not, perform
+        // additional work to detect Byzantine validations
+        let now = self.by_ledger.now();
+
+        let inserted = match self.by_sequence.get_or_insert_mut(validation.seq()).entry(*node_id) {
+            Entry::Occupied(mut e) => {
+                // Check if the entry we're already tracking was signed
+                // long enough ago that we can disregard it.
+                let diff = e.get().sign_time().max(validation.sign_time())
+                    .duration_since(e.get().sign_time().min(validation.sign_time()))
+                    .unwrap();
+                if diff > self.params.validation_current_wall() &&
+                    validation.sign_time() > e.get().sign_time() {
+                    e.insert(*validation);
+                }
+
+                e.into_mut()
+            }
+            Entry::Vacant(e) => {
+                e.insert(*validation)
+            }
+        };
+
+        // Enforce monotonically increasing sequences for validations
+        // by a given node, and run the active Byzantine detector:
+        let enforcer = self.seq_enforcers.entry(*node_id).or_insert(SeqEnforcer::new());
+        if !enforcer.advance_ledger(now, validation.seq(), &self.params) {
+            // If the validation is for the same sequence as one we are
+            // tracking, check it closely:
+            if inserted.seq() == validation.seq() {
+                // Two validations for the same sequence but for different
+                // ledgers. This could be the result of misconfiguration
+                // but it can also mean a Byzantine validator.
+                if inserted.ledger_id() != validation.ledger_id() {
+                    return ValidationStatus::Conflicting;
+                }
+
+                // Two validations for the same sequence and for the same
+                // ledger with different sign times. This could be the
+                // result of a misconfiguration but it can also mean a
+                // Byzantine validator.
+                if inserted.sign_time() != validation.sign_time() {
+                    return ValidationStatus::Conflicting;
+                }
+
+                // Two validations for the same sequence but with different
+                // cookies. This is probably accidental misconfiguration.
+                if inserted.cookie() != validation.cookie() {
+                    return ValidationStatus::Multiple;
+                }
+            }
+
+            return ValidationStatus::BadSeq;
+        }
+
+        self.by_ledger.get_or_insert_mut(validation.ledger_id()).insert(*node_id, *validation);
+
+        match self.current.entry(*node_id) {
+            Entry::Occupied(mut e) => {
+                // Replace existing only if this one is newer
+                if validation.sign_time() > e.get().sign_time() {
+                    let old = (e.get().seq(), e.get().ledger_id());
+                    e.insert(*validation);
+                    if validation.trusted() {
+                        self._process_validation(node_id, validation, Some(old));
+                    }
+                } else {
+                    return ValidationStatus::Stale;
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert(*validation);
+                if validation.trusted() {
+                    self._process_validation(node_id, validation, None);
+                }
+            }
+        }
+        return ValidationStatus::Current;
     }
 
     pub fn set_seq_to_keep(&mut self, low: &LedgerIndex, high: &LedgerIndex) {
@@ -142,7 +243,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
                 // current ledger since we might be about to generate it
                 if preferred.seq() == curr.seq() + 1 &&
                     preferred.ancestor(curr.seq()) == curr.id() {
-                    return Some((curr.seq(), curr.id()))
+                    return Some((curr.seq(), curr.id()));
                 }
 
                 // A ledger ahead of us is preferred regardless of whether it is
@@ -154,7 +255,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
                 // Only switch to earlier or same sequence number
                 // if it is a different chain.
                 if curr.get_ancestor(preferred.seq()) != preferred.id() {
-                    return Some((preferred.seq(), preferred.id()))
+                    return Some((preferred.seq(), preferred.id()));
                 }
 
                 // Stick with current ledger
@@ -184,7 +285,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
             .filter(|preferred| preferred.0 >= min_valid_seq)
             .map_or_else(
                 || curr.id(),
-                |preferred| preferred.1
+                |preferred| preferred.1,
             )
     }
 
@@ -240,21 +341,15 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
 
     ///// Private functions
     fn _remove_trie(
-        &mut self,
-        lock: MutexGuard<()>,
+        trie: &mut T,
         node_id: &A::NodeIdType,
         validation: &A::ValidationType,
     ) {
         todo!()
     }
 
-    fn _check_acquired(&self, lock: MutexGuard<()>) {
-        todo!()
-    }
-
     fn _update_trie(
         &mut self,
-        lock: MutexGuard<()>,
         node_id: &A::NodeIdType,
         ledger: A::LedgerType,
     ) {
@@ -263,7 +358,6 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
 
     fn _process_validation(
         &mut self,
-        lock: MutexGuard<()>,
         node_id: &A::NodeIdType,
         validation: &A::ValidationType,
         prior: Option<(LedgerIndex, A::LedgerIdType)>,
@@ -271,32 +365,62 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
         todo!()
     }
 
+    /// Use the trie for a calculation.
+    ///
+    /// Accessing the trie through this helper ensures acquiring validations are checked
+    /// and any stale validations are flushed from the trie.
     fn _with_trie<F: FnMut(&mut T) -> R, R>(
         &mut self,
-        // TODO: Maybe reinstate this
-        // lock: MutexGuard<()>,
-        f: F,
+        mut f: F,
     ) -> R {
-        todo!()
+        // Call current to flush any stale validations
+        self._current(|_| {}, |_, _| {});
+        f(&mut self.trie)
     }
 
+    /// Iterate through current validations, flushing any which are stale.
+    ///
+    /// # Params
+    /// **pre**: A `FnOnce(usize)` called prior to iterating.
+    /// **f**: A `Fn` to call on each iteration.
     fn _current<Pre, F>(
         &mut self,
-        lock: MutexGuard<()>,
         pre: Pre,
         f: F,
     ) where
         Pre: FnOnce(usize),
         F: Fn(&A::NodeIdType, &A::ValidationType) {
-        todo!()
+        let now = self.adaptor.now();
+        pre(self.current.len());
+
+        let (current, trie) = (&mut self.current, &mut self.trie);
+        current.retain(|node_id, val| {
+            let is_current = Self::_is_current(&self.params, &now, &val.sign_time(), &val.seen_time());
+            if !is_current {
+                Self::_remove_trie(trie, node_id, val);
+            } else {
+                f(node_id, val);
+            }
+            is_current
+        });
+    }
+
+    fn _is_current(
+        p: &ValidationParams,
+        now: &SystemTime,
+        sign_time: &SystemTime,
+        seen_time: &SystemTime
+    ) -> bool {
+        return (sign_time > &(*now - p.validation_current_early())) &&
+            (sign_time < &(*now + p.validation_current_wall())) &&
+            ((seen_time == &UNIX_EPOCH) || (seen_time < &(*now + p.validation_current_local())));
     }
 
     fn _by_ledger<Pre, F>(
         &mut self,
-        lock: MutexGuard<()>,
         ledger_id: &A::LedgerIdType,
         pre: Pre,
-        f: F
+        f: F,
     ) where
         Pre: FnOnce(usize),
         F: Fn(&A::NodeIdType, &A::ValidationType) {

@@ -6,6 +6,7 @@ use std::time::Duration;
 /// These are protocol level parameters that should not be changed without
 /// careful consideration.  They are *not* implemented as static
 /// to allow simulation code to test alternate parameter settings.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct ValidationParams {
     /// The number of seconds a validation remains current after its ledger's
     /// close time.
@@ -23,7 +24,7 @@ pub struct ValidationParams {
     ///
     /// The number of seconds before a close time that we consider a validation
     /// acceptable. This protects against extreme clock errors.
-    validation_currency_early: Duration,
+    validation_current_early: Duration,
     /// Duration a set of validations for a given ledger hash remain valid.
     ///
     /// The number of seconds before a set of validations for a given ledger
@@ -45,7 +46,7 @@ impl Default for ValidationParams {
         ValidationParams {
             validation_current_wall: Duration::from_secs(5 * 60),
             validation_current_local: Duration::from_secs(3 * 60),
-            validation_currency_early: Duration::from_secs(3 * 60),
+            validation_current_early: Duration::from_secs(3 * 60),
             validation_set_expires: Duration::from_secs(10 * 60),
             validation_freshness: Duration::from_secs(20),
         }
@@ -59,8 +60,8 @@ impl ValidationParams {
     pub fn validation_current_local(&self) -> Duration {
         self.validation_current_local
     }
-    pub fn validation_currency_early(&self) -> Duration {
-        self.validation_currency_early
+    pub fn validation_current_early(&self) -> Duration {
+        self.validation_current_early
     }
     pub fn validation_set_expires(&self) -> Duration {
         self.validation_set_expires
@@ -79,7 +80,7 @@ mod tests {
         let params = ValidationParams::default();
         assert_eq!(params.validation_current_wall(), Duration::from_secs(5 * 60));
         assert_eq!(params.validation_current_local(), Duration::from_secs(3 * 60));
-        assert_eq!(params.validation_currency_early(), Duration::from_secs(3 * 60));
+        assert_eq!(params.validation_current_early(), Duration::from_secs(3 * 60));
         assert_eq!(params.validation_set_expires(), Duration::from_secs(10 * 60));
         assert_eq!(params.validation_freshness(), Duration::from_secs(20));
     }
