@@ -10,4 +10,6 @@ pub trait Adaptor {
     type NodeKeyType;
 
     fn now(&self) -> SystemTime;
+
+    fn acquire(&mut self, ledger_id: &Self::LedgerIdType) -> Option<Self::LedgerType>;
 }

@@ -44,7 +44,8 @@ use crate::span::SpanTip;
 ///         assert(a[p] == b[p]);
 /// }
 /// ```
-pub trait LedgerTrie<T: Ledger> {
+pub trait LedgerTrie<T: Ledger>: Default {
+
     /// Insert and/or increment the support for the given ledger.
     ///
     /// # Params

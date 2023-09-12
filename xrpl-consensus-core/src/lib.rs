@@ -1,3 +1,4 @@
+use std::hash::Hash;
 use std::time::SystemTime;
 
 pub type LedgerIndex = u32;
@@ -16,7 +17,7 @@ pub trait Ledger: Clone {
     fn mismatch(&self, other: &Self) -> LedgerIndex;
 }
 
-pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone {
+pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + Hash {
 
 }
 
@@ -29,4 +30,5 @@ pub trait Validation: Copy + Clone {
     fn seen_time(&self) -> SystemTime;
     fn cookie(&self) -> u64;
     fn trusted(&self) -> bool;
+    fn full(&self) -> bool;
 }

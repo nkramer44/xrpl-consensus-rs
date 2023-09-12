@@ -64,6 +64,12 @@ pub struct ArenaLedgerTrie<T: Ledger> {
     seq_support: BTreeMap<LedgerIndex, u32>, // Needs to be ordered
 }
 
+impl<T: Ledger> Default for ArenaLedgerTrie<T> {
+    fn default() -> Self {
+        ArenaLedgerTrie::new()
+    }
+}
+
 impl<T: Ledger> LedgerTrie<T> for ArenaLedgerTrie<T> {
     fn insert(&mut self, ledger: &T, count: Option<u32>) {
         // Find the ID of the node with the longest common ancestry with `ledger`

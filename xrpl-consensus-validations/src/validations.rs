@@ -1,8 +1,10 @@
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
-use std::marker::PhantomData;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::hash::Hash;
+use std::ops::Add;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use xrpl_consensus_core::{Ledger, LedgerIndex, Validation};
 
@@ -11,23 +13,47 @@ use crate::ledger_trie::LedgerTrie;
 use crate::seq_enforcer::SeqEnforcer;
 use crate::validation_params::ValidationParams;
 
-struct AgedUnorderedMap<K, V> {
-    // TODO: This should be a port/replica of beast::aged_unordered_map
-    v: PhantomData<K>,
-    k: PhantomData<V>,
+struct AgedUnorderedMap<K, V>
+    where
+        K: Eq + PartialEq + Hash,
+        V: Default {
+    // TODO: This should be a port/replica of beast::aged_unordered_map. The only
+    //  difference between a HashMap and beast::aged_unordered_map is that you can
+    //  expire entries, but for simplicity's sake, we can just not expire entries.
+    inner: HashMap<K, V>,
 }
 
-impl<K, V> AgedUnorderedMap<K, V> {
+impl<K: Eq + PartialEq + Hash, V: Default> Default for AgedUnorderedMap<K, V> {
+    fn default() -> Self {
+        AgedUnorderedMap {
+            inner: HashMap::default()
+        }
+    }
+}
+
+impl<K: Eq + PartialEq + Hash, V: Default> AgedUnorderedMap<K, V> {
     pub fn now(&self) -> Instant {
-        todo!()
+        Instant::now()
     }
 
     pub fn get_or_insert(&mut self, k: K) -> &V {
-        todo!()
+        self.get_or_insert_mut(k)
     }
 
     pub fn get_or_insert_mut(&mut self, k: K) -> &mut V {
-        todo!()
+        self.inner.entry(k).or_default()
+    }
+
+    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
+        where
+            K: Borrow<Q>,
+            Q: Hash + Eq,
+    {
+        self.inner.get(k)
+    }
+
+    fn touch(&self, k: &K) {
+        // TODO: Update the timestamp on the entry
     }
 }
 
@@ -68,6 +94,24 @@ pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>> {
 }
 
 impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
+    pub fn new(params: ValidationParams, adaptor: A) -> Self {
+        Validations {
+            current: Default::default(),
+            local_seq_enforcer: SeqEnforcer::new(),
+            seq_enforcers: Default::default(),
+            by_ledger: AgedUnorderedMap::default(),
+            by_sequence: AgedUnorderedMap::default(),
+            to_keep: None,
+            trie: T::default(),
+            last_ledger: Default::default(),
+            acquiring: Default::default(),
+            params,
+            adaptor,
+        }
+    }
+}
+
+impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
     pub fn adaptor(&self) -> &A {
         &self.adaptor
     }
@@ -94,7 +138,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
             self.params(),
             &self.adaptor().now(),
             &validation.sign_time(),
-            &validation.seen_time()
+            &validation.seen_time(),
         ) {
             return ValidationStatus::Stale;
         }
@@ -311,7 +355,17 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
     }
 
     pub fn num_trusted_for_ledger(&mut self, ledger_id: &A::LedgerIdType) -> usize {
-        todo!()
+        let mut count = 0;
+        self._by_ledger(
+            ledger_id,
+            |_| {},
+            |node_id, val| {
+                if val.trusted() && val.full() {
+                    count += 1;
+                }
+            },
+        );
+        count
     }
 
     pub fn get_trusted_for_ledger(
@@ -353,7 +407,15 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
         node_id: &A::NodeIdType,
         ledger: A::LedgerType,
     ) {
-        todo!()
+        match self.last_ledger.entry(*node_id) {
+            Entry::Occupied(mut e) => {
+                self.trie.remove(e.get(), None);
+                e.insert(ledger);
+            }
+            Entry::Vacant(e) => {
+                e.insert(ledger);
+            }
+        }
     }
 
     fn _process_validation(
@@ -362,7 +424,34 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
         validation: &A::ValidationType,
         prior: Option<(LedgerIndex, A::LedgerIdType)>,
     ) {
-        todo!()
+        // Clear any prior acquiring ledger for this node
+        if let Some((seq, id)) = prior {
+            if let Entry::Occupied(e) = self.acquiring.entry((seq, id))
+                .and_modify(|e| {
+                    e.remove(node_id);
+                }) {
+                if e.get().len() == 0 {
+                    e.remove();
+                }
+            }
+        }
+
+        match self.acquiring.entry((validation.seq(), validation.ledger_id())) {
+            Entry::Occupied(mut e) => {
+                e.get_mut().insert(*node_id);
+            }
+            Entry::Vacant(e) => {
+                match self.adaptor.acquire(&validation.ledger_id()) {
+                    None => {
+                        self.acquiring.entry((validation.seq(), validation.ledger_id())).or_default()
+                            .insert(*node_id);
+                    }
+                    Some(ledger) => {
+                        self._update_trie(node_id, ledger);
+                    }
+                }
+            }
+        }
     }
 
     /// Use the trie for a calculation.
@@ -409,7 +498,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
         p: &ValidationParams,
         now: &SystemTime,
         sign_time: &SystemTime,
-        seen_time: &SystemTime
+        seen_time: &SystemTime,
     ) -> bool {
         return (sign_time > &(*now - p.validation_current_early())) &&
             (sign_time < &(*now + p.validation_current_wall())) &&
@@ -420,19 +509,381 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
         &mut self,
         ledger_id: &A::LedgerIdType,
         pre: Pre,
-        f: F,
+        mut f: F,
     ) where
         Pre: FnOnce(usize),
-        F: Fn(&A::NodeIdType, &A::ValidationType) {
-        todo!()
+        F: FnMut(&A::NodeIdType, &A::ValidationType) {
+        if let Some(vals) = self.by_ledger.get(ledger_id) {
+            self.by_ledger.touch(ledger_id);
+            pre(vals.len());
+            vals.iter()
+                .for_each(|(node_id, val)| {
+                    f(node_id, val)
+                });
+        }
     }
 }
 
-
+#[derive(Eq, PartialEq, Debug)]
 pub enum ValidationStatus {
     Current,
     Stale,
     BadSeq,
     Multiple,
     Conflicting,
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::{Duration, SystemTime};
+
+    use xrpl_consensus_core::{Ledger, LedgerIndex};
+
+    use crate::adaptor::Adaptor;
+    use crate::arena_ledger_trie::ArenaLedgerTrie;
+    use crate::test_utils::ledgers::{LedgerHistoryHelper, LedgerOracle, SimulatedLedger};
+    use crate::test_utils::validation::{PeerId, PeerKey, TestValidation};
+    use crate::validation_params::ValidationParams;
+    use crate::validations::{Validations, ValidationStatus};
+
+    #[test]
+    fn test_add_validations() {
+        let mut h = LedgerHistoryHelper::new();
+        let a = h.get_or_create("a");
+        let ab = h.get_or_create("ab");
+        let az = h.get_or_create("az");
+        let abc = h.get_or_create("abc");
+        let abcd = h.get_or_create("abcd");
+        let abcde = h.get_or_create("abcde");
+
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let mut node = harness.make_node();
+        let v = node.validate_ledger(&a);
+        assert_eq!(harness.add(&v), ValidationStatus::Current);
+
+        // Re-adding violates the increasing seq requirement for full
+        // validations
+        assert_eq!(harness.add(&v), ValidationStatus::BadSeq);
+
+        assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Current);
+
+        // Test the node changing signing key
+
+        // Confirm old ledger on hand, but not new ledger
+        // let validations_mut: &mut TestValidations = harness.validations_mut();
+        assert_eq!(harness.validations.num_trusted_for_ledger(&ab.id()), 1);
+        assert_eq!(harness.validations.num_trusted_for_ledger(&abc.id()), 0);
+
+
+        // Rotate signing keys
+        node.advance_key();
+
+        // Cannot re-do the same full validation sequence
+        assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Conflicting);
+
+        // Cannot send the same partial validation sequence
+        assert_eq!(harness.add(&node.partial(&ab)), ValidationStatus::Conflicting);
+
+        // Now trusts the newest ledger too
+        assert_eq!(harness.add(&node.validate_ledger(&abc)), ValidationStatus::Current);
+        assert_eq!(harness.validations.num_trusted_for_ledger(&ab.id()), 1);
+        assert_eq!(harness.validations.num_trusted_for_ledger(&abc.id()), 1);
+
+        // Processing validations out of order should ignore the older
+        // validation
+        let val_abcde = node.validate_ledger(&abcde);
+        let val_abcd = node.validate_ledger(&abcd);
+
+        assert_eq!(harness.add(&val_abcd), ValidationStatus::Current);
+        assert_eq!(harness.add(&val_abcde), ValidationStatus::Stale);
+    }
+
+    #[test]
+    fn test_add_validations_out_of_order_with_shifted_times() {
+        let mut h = LedgerHistoryHelper::new();
+        let a = h.get_or_create("a");
+        let ab = h.get_or_create("ab");
+        let az = h.get_or_create("az");
+        let abc = h.get_or_create("abc");
+        let abcd = h.get_or_create("abcd");
+        let abcde = h.get_or_create("abcde");
+
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let mut node = harness.make_node();
+
+        // Establish a new current validation
+        assert_eq!(harness.add(&node.validate_ledger(&a)), ValidationStatus::Current);
+
+        // Process a validation that has "later" seq but early sign time
+        assert_eq!(harness.add(&node.validate_full(
+            &ab,
+            DurationOffset::Minus(Duration::from_secs(1)),
+            DurationOffset::Minus(Duration::from_secs(1)),
+        )), ValidationStatus::Stale);
+
+        // Process a validation that has a later seq and later sign
+        // time
+        assert_eq!(harness.add(&node.validate_full(
+            &abc,
+            DurationOffset::Plus(Duration::from_secs(1)),
+            DurationOffset::Plus(Duration::from_secs(1)),
+        )), ValidationStatus::Current);
+    }
+
+    #[test]
+    fn test_add_validations_stale_on_arrival() {
+        let mut h = LedgerHistoryHelper::new();
+        let a = h.get_or_create("a");
+        let ab = h.get_or_create("ab");
+        let az = h.get_or_create("az");
+        let abc = h.get_or_create("abc");
+        let abcd = h.get_or_create("abcd");
+        let abcde = h.get_or_create("abcde");
+
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let mut node = harness.make_node();
+        assert_eq!(
+            harness.add(&node.validate_full(
+                &a,
+                DurationOffset::Minus(harness.params().validation_current_early()),
+                DurationOffset::Zero,
+            )),
+            ValidationStatus::Stale
+        );
+
+        assert_eq!(
+            harness.add(&node.validate_full(
+                &a,
+                DurationOffset::Plus(harness.params().validation_current_wall()),
+                DurationOffset::Zero,
+            )),
+            ValidationStatus::Stale
+        );
+
+        assert_eq!(
+            harness.add(&node.validate_full(
+                &a,
+                DurationOffset::Zero,
+                DurationOffset::Plus(harness.params().validation_current_local()),
+            )),
+            ValidationStatus::Stale
+        );
+    }
+
+    #[test]
+    fn test_add_validations_full_or_partials_cannot_be_sent_for_older_seqs_unless_timeout() {
+        let mut h = LedgerHistoryHelper::new();
+        let a = h.get_or_create("a");
+        let ab = h.get_or_create("ab");
+        let az = h.get_or_create("az");
+        let abc = h.get_or_create("abc");
+        let abcd = h.get_or_create("abcd");
+        let abcde = h.get_or_create("abcde");
+
+        let do_test = |do_full: bool| {
+            let mut harness = TestHarness::new(h.oracle_mut());
+            let node = harness.make_node();
+
+            let mut process = |ledger: &SimulatedLedger| {
+                if do_full {
+                    harness.add(&node.validate_ledger(ledger))
+                } else {
+                    harness.add(&node.partial(ledger))
+                }
+            };
+
+            assert_eq!(process(&abc), ValidationStatus::Current);
+            assert!(ab.seq() < abc.seq());
+            assert_eq!(process(&ab), ValidationStatus::BadSeq);
+
+            // If we advance far enough for AB to expire, we can fully
+            // validate or partially validate that sequence number again
+        };
+    }
+
+    pub enum DurationOffset {
+        Plus(Duration),
+        Minus(Duration),
+        Zero
+    }
+
+    impl DurationOffset {
+        pub fn apply_to(&self, sys_time: SystemTime) -> SystemTime {
+            match self {
+                DurationOffset::Plus(d) => sys_time + *d,
+                DurationOffset::Minus(d) => sys_time - *d,
+                DurationOffset::Zero => sys_time
+            }
+        }
+    }
+
+
+    struct TestNode {
+        node_id: PeerId,
+        trusted: bool,
+        sign_idx: usize,
+        load_fee: Option<u32>,
+    }
+
+    impl TestNode {
+        pub fn new(node_id: PeerId) -> Self {
+            TestNode {
+                node_id,
+                trusted: true,
+                sign_idx: 1,
+                load_fee: None,
+            }
+        }
+
+        pub fn untrust(&mut self) {
+            self.trusted = false;
+        }
+
+        pub fn trust(&mut self) {
+            self.trusted = true;
+        }
+
+        pub fn set_load_fee(&mut self, fee: u32) {
+            self.load_fee = Some(fee);
+        }
+
+        pub fn node_id(&self) -> PeerId {
+            self.node_id
+        }
+
+        pub fn advance_key(&mut self) {
+            self.sign_idx += 1;
+        }
+
+        pub fn curr_key(&self) -> PeerKey {
+            PeerKey(self.node_id, self.sign_idx)
+        }
+
+        pub fn master_key(&self) -> PeerKey {
+            PeerKey(self.node_id, 0)
+        }
+
+        // pub fn now()
+
+        pub fn validate(
+            &self,
+            id: <SimulatedLedger as Ledger>::IdType,
+            seq: LedgerIndex,
+            sign_offset: DurationOffset,
+            seen_offset: DurationOffset,
+            full: bool,
+        ) -> TestValidation {
+            TestValidation::new(
+                id,
+                seq,
+                sign_offset.apply_to(SystemTime::now()),
+                seen_offset.apply_to(SystemTime::now()),
+                self.curr_key(),
+                self.node_id,
+                self.trusted,
+                full,
+                self.load_fee,
+                None,
+            )
+        }
+
+        pub fn validate_full(
+            &self,
+            ledger: &SimulatedLedger,
+            sign_offset: DurationOffset,
+            seen_offset: DurationOffset,
+        ) -> TestValidation {
+            self.validate(
+                ledger.id(),
+                ledger.seq(),
+                sign_offset,
+                seen_offset,
+                true,
+            )
+        }
+
+        pub fn validate_ledger(&self, ledger: &SimulatedLedger) -> TestValidation {
+            self.validate(
+                ledger.id(),
+                ledger.seq(),
+                DurationOffset::Zero,
+                DurationOffset::Zero,
+                true,
+            )
+        }
+
+        pub fn partial(&self, ledger: &SimulatedLedger) -> TestValidation {
+            self.validate(
+                ledger.id(),
+                ledger.seq(),
+                DurationOffset::Zero,
+                DurationOffset::Zero,
+                false,
+            )
+        }
+    }
+
+    struct TestAdaptor<'a> {
+        oracle: &'a mut LedgerOracle,
+    }
+
+    impl<'a> TestAdaptor<'a> {
+        fn new(oracle: &'a mut LedgerOracle) -> Self {
+            TestAdaptor {
+                oracle,
+            }
+        }
+    }
+
+    impl<'a> Adaptor for TestAdaptor<'a> {
+        type ValidationType = TestValidation;
+        type LedgerType = SimulatedLedger;
+        type LedgerIdType = <Self::LedgerType as Ledger>::IdType;
+        type NodeIdType = PeerId;
+        type NodeKeyType = PeerKey;
+
+        fn now(&self) -> SystemTime {
+            SystemTime::now()
+        }
+
+        fn acquire(&mut self, ledger_id: &Self::LedgerIdType) -> Option<Self::LedgerType> {
+            self.oracle.lookup(ledger_id)
+        }
+    }
+
+    type TestValidations<'a> = Validations<TestAdaptor<'a>, ArenaLedgerTrie<SimulatedLedger>>;
+
+    struct TestHarness<'a> {
+        params: ValidationParams,
+        pub validations: TestValidations<'a>,
+        next_node_id: PeerId,
+    }
+
+    impl<'a> TestHarness<'a> {
+        pub fn new(oracle: &'a mut LedgerOracle) -> Self {
+            TestHarness {
+                params: Default::default(),
+                validations: Validations::new(
+                    ValidationParams::default(),
+                    TestAdaptor::new(oracle),
+                ),
+                next_node_id: PeerId(0),
+            }
+        }
+
+        pub fn add(&mut self, v: &TestValidation) -> ValidationStatus {
+            self.validations.add(&v.node_id(), v)
+        }
+
+        pub fn make_node(&mut self) -> TestNode {
+            self.next_node_id += 1;
+            TestNode::new(self.next_node_id)
+        }
+
+        pub fn params(&self) -> &ValidationParams {
+            &self.params
+        }
+    }
 }

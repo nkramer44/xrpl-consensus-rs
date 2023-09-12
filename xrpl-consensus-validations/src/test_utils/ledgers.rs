@@ -219,9 +219,9 @@ impl LedgerOracle {
         }
     }
 
-    pub fn lookup(&self, id: LedgerId) -> Option<SimulatedLedger> {
-        self.instances.get_by_right(&id)
-            .map(|entry| SimulatedLedger::new(id, entry.clone()))
+    pub fn lookup(&self, id: &LedgerId) -> Option<SimulatedLedger> {
+        self.instances.get_by_right(id)
+            .map(|entry| SimulatedLedger::new(*id, entry.clone()))
     }
 
     pub fn accept_with_times(
@@ -378,6 +378,10 @@ impl LedgerHistoryHelper {
 
     pub fn get_or_create(&mut self, s: &str) -> Rc<SimulatedLedger> {
         self.get_or_create_string(s.to_string())
+    }
+
+    pub fn oracle_mut(&mut self) -> &mut LedgerOracle {
+        &mut self.oracle
     }
 }
 
