@@ -1,7 +1,8 @@
-use std::alloc::System;
 use std::ops::Add;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
+
 use xrpl_consensus_core::LedgerIndex;
+
 use crate::validation_params::ValidationParams;
 
 /// Enforce validation increasing sequence requirement.
@@ -63,6 +64,7 @@ impl SeqEnforcer {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
     use super::*;
 
     #[test]

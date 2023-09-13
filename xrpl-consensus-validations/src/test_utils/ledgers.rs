@@ -106,7 +106,7 @@ pub(crate) struct SimulatedLedger {
     id: LedgerId,
 }
 
-pub(crate) static GENISIS: Lazy<LedgerInstance> = Lazy::new(|| {
+pub(crate) static GENESIS: Lazy<LedgerInstance> = Lazy::new(|| {
     LedgerInstance::genesis()
 });
 
