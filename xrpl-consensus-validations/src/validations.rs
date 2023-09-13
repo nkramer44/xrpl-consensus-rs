@@ -1,39 +1,41 @@
-use std::borrow::Borrow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::ops::Add;
+use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use xrpl_consensus_core::{Ledger, LedgerIndex, Validation};
+use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation};
 
 use crate::adaptor::Adaptor;
 use crate::ledger_trie::LedgerTrie;
 use crate::seq_enforcer::SeqEnforcer;
 use crate::validation_params::ValidationParams;
 
-struct AgedUnorderedMap<K, V>
+struct AgedUnorderedMap<K, V, C>
     where
         K: Eq + PartialEq + Hash,
-        V: Default {
+        V: Default,
+        C: NetClock {
     // TODO: This should be a port/replica of beast::aged_unordered_map. The only
     //  difference between a HashMap and beast::aged_unordered_map is that you can
     //  expire entries, but for simplicity's sake, we can just not expire entries.
     inner: HashMap<K, V>,
+    clock: Rc<RefCell<C>>
 }
 
-impl<K: Eq + PartialEq + Hash, V: Default> Default for AgedUnorderedMap<K, V> {
-    fn default() -> Self {
+impl<K: Eq + PartialEq + Hash, V: Default, C: NetClock> AgedUnorderedMap<K, V, C> {
+    pub fn new(clock: Rc<RefCell<C>>) -> Self {
         AgedUnorderedMap {
-            inner: HashMap::default()
+            inner: Default::default(),
+            clock,
         }
     }
-}
 
-impl<K: Eq + PartialEq + Hash, V: Default> AgedUnorderedMap<K, V> {
-    pub fn now(&self) -> Instant {
-        Instant::now()
+    pub fn now(&self) -> SystemTime {
+        self.clock.borrow().now()
     }
 
     pub fn get_or_insert(&mut self, k: K) -> &V {
@@ -44,11 +46,7 @@ impl<K: Eq + PartialEq + Hash, V: Default> AgedUnorderedMap<K, V> {
         self.inner.entry(k).or_default()
     }
 
-    pub fn get<Q: ?Sized>(&self, k: &Q) -> Option<&V>
-        where
-            K: Borrow<Q>,
-            Q: Hash + Eq,
-    {
+    pub fn get(&self, k: &K) -> Option<&V> {
         self.inner.get(k)
     }
 
@@ -62,7 +60,7 @@ struct KeepRange {
     pub high: LedgerIndex,
 }
 
-pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>> {
+pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> {
     /// Manages concurrent access to members
     // TODO: Do we need a Mutex here, or should we create another struct that has one field, a Mutex<Validations>?
     //   I think the latter. see https://stackoverflow.com/questions/57256035/how-to-lock-a-rust-struct-the-way-a-struct-is-locked-in-go
@@ -74,9 +72,9 @@ pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>> {
     /// Sequence of the largest validation received from each node
     seq_enforcers: HashMap<A::NodeIdType, SeqEnforcer>,
     /// Validations from listed nodes, indexed by ledger id (partial and full)
-    by_ledger: AgedUnorderedMap<A::LedgerIdType, HashMap<A::NodeIdType, A::ValidationType>>,
+    by_ledger: AgedUnorderedMap<A::LedgerIdType, HashMap<A::NodeIdType, A::ValidationType>, C>,
     /// Partial and full validations indexed by sequence
-    by_sequence: AgedUnorderedMap<LedgerIndex, HashMap<A::NodeIdType, A::ValidationType>>,
+    by_sequence: AgedUnorderedMap<LedgerIndex, HashMap<A::NodeIdType, A::ValidationType>, C>,
     /// A range [low, high) of validations to keep from expire
     to_keep: Option<KeepRange>,
     /// Represents the ancestry of validated ledgers
@@ -93,14 +91,14 @@ pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>> {
     adaptor: A,
 }
 
-impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
-    pub fn new(params: ValidationParams, adaptor: A) -> Self {
+impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C> {
+    pub fn new(params: ValidationParams, adaptor: A, clock: Rc<RefCell<C>>) -> Self {
         Validations {
             current: Default::default(),
             local_seq_enforcer: SeqEnforcer::new(),
             seq_enforcers: Default::default(),
-            by_ledger: AgedUnorderedMap::default(),
-            by_sequence: AgedUnorderedMap::default(),
+            by_ledger: AgedUnorderedMap::new(clock.clone()),
+            by_sequence: AgedUnorderedMap::new(clock),
             to_keep: None,
             trie: T::default(),
             last_ledger: Default::default(),
@@ -111,7 +109,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
     }
 }
 
-impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
+impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C> {
     pub fn adaptor(&self) -> &A {
         &self.adaptor
     }
@@ -130,7 +128,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>> Validations<A, T> {
     /// A bool indicating whether the validation satisfies the invariant, updating the
     /// largest sequence number seen accordingly.
     pub fn can_validate_seq(&mut self, seq: LedgerIndex) -> bool {
-        self.local_seq_enforcer.advance_ledger(Instant::now(), seq, &self.params)
+        self.local_seq_enforcer.advance_ledger(self.by_ledger.now(), seq, &self.params)
     }
 
     pub fn add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> ValidationStatus {
@@ -536,10 +534,12 @@ pub enum ValidationStatus {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
     use std::time::{Duration, SystemTime};
 
-    use xrpl_consensus_core::{Ledger, LedgerIndex};
+    use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock};
 
     use crate::adaptor::Adaptor;
     use crate::arena_ledger_trie::ArenaLedgerTrie;
@@ -567,6 +567,8 @@ mod tests {
         // validations
         assert_eq!(harness.add(&v), ValidationStatus::BadSeq);
 
+        harness.advance_time(Duration::from_secs(1));
+
         assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Current);
 
         // Test the node changing signing key
@@ -580,6 +582,8 @@ mod tests {
         // Rotate signing keys
         node.advance_key();
 
+        harness.advance_time(Duration::from_secs(1));
+
         // Cannot re-do the same full validation sequence
         assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Conflicting);
 
@@ -587,13 +591,16 @@ mod tests {
         assert_eq!(harness.add(&node.partial(&ab)), ValidationStatus::Conflicting);
 
         // Now trusts the newest ledger too
+        harness.advance_time(Duration::from_secs(1));
         assert_eq!(harness.add(&node.validate_ledger(&abc)), ValidationStatus::Current);
         assert_eq!(harness.validations.num_trusted_for_ledger(&ab.id()), 1);
         assert_eq!(harness.validations.num_trusted_for_ledger(&abc.id()), 1);
 
         // Processing validations out of order should ignore the older
         // validation
+        harness.advance_time(Duration::from_secs(2));
         let val_abcde = node.validate_ledger(&abcde);
+        harness.advance_time(Duration::from_secs(4));
         let val_abcd = node.validate_ledger(&abcd);
 
         assert_eq!(harness.add(&val_abcd), ValidationStatus::Current);
@@ -682,11 +689,11 @@ mod tests {
         let abcd = h.get_or_create("abcd");
         let abcde = h.get_or_create("abcde");
 
-        let do_test = |do_full: bool| {
+        let mut do_test = |do_full: bool| {
             let mut harness = TestHarness::new(h.oracle_mut());
             let node = harness.make_node();
 
-            let mut process = |ledger: &SimulatedLedger| {
+            let mut process = |harness: &mut TestHarness, ledger: &SimulatedLedger| {
                 if do_full {
                     harness.add(&node.validate_ledger(ledger))
                 } else {
@@ -694,13 +701,20 @@ mod tests {
                 }
             };
 
-            assert_eq!(process(&abc), ValidationStatus::Current);
+            assert_eq!(process(&mut harness, &abc), ValidationStatus::Current);
+            harness.advance_time(Duration::from_secs(1));
             assert!(ab.seq() < abc.seq());
-            assert_eq!(process(&ab), ValidationStatus::BadSeq);
+            assert_eq!(process(&mut harness, &ab), ValidationStatus::BadSeq);
 
             // If we advance far enough for AB to expire, we can fully
             // validate or partially validate that sequence number again
+            assert_eq!(process(&mut harness, &az), ValidationStatus::Conflicting);
+            harness.advance_time(harness.params().validation_set_expires() + Duration::from_millis(1));
+            assert_eq!(process(&mut harness, &az), ValidationStatus::Current);
         };
+
+        do_test(true);
+        do_test(false);
     }
 
     pub enum DurationOffset {
@@ -725,15 +739,17 @@ mod tests {
         trusted: bool,
         sign_idx: usize,
         load_fee: Option<u32>,
+        clock: Rc<RefCell<ManualClock>>
     }
 
     impl TestNode {
-        pub fn new(node_id: PeerId) -> Self {
+        pub fn new(node_id: PeerId, clock: Rc<RefCell<ManualClock>>) -> Self {
             TestNode {
                 node_id,
                 trusted: true,
                 sign_idx: 1,
                 load_fee: None,
+                clock
             }
         }
 
@@ -765,7 +781,9 @@ mod tests {
             PeerKey(self.node_id, 0)
         }
 
-        // pub fn now()
+        pub fn now(&self) -> SystemTime {
+            self.clock.borrow().now()
+        }
 
         pub fn validate(
             &self,
@@ -778,8 +796,8 @@ mod tests {
             TestValidation::new(
                 id,
                 seq,
-                sign_offset.apply_to(SystemTime::now()),
-                seen_offset.apply_to(SystemTime::now()),
+                sign_offset.apply_to(self.now()),
+                seen_offset.apply_to(self.now()),
                 self.curr_key(),
                 self.node_id,
                 self.trusted,
@@ -825,14 +843,34 @@ mod tests {
         }
     }
 
+    pub struct ManualClock {
+        now: SystemTime
+    }
+
+    impl ManualClock {
+        pub fn new() -> Self {
+            ManualClock {
+                now: SystemTime::now()
+            }
+        }
+    }
+
+    impl NetClock for ManualClock {
+        fn now(&self) -> SystemTime {
+            self.now
+        }
+    }
+
     struct TestAdaptor<'a> {
         oracle: &'a mut LedgerOracle,
+        clock: Rc<RefCell<ManualClock>>
     }
 
     impl<'a> TestAdaptor<'a> {
-        fn new(oracle: &'a mut LedgerOracle) -> Self {
+        fn new(oracle: &'a mut LedgerOracle, clock: Rc<RefCell<ManualClock>>) -> Self {
             TestAdaptor {
                 oracle,
+                clock
             }
         }
     }
@@ -843,9 +881,10 @@ mod tests {
         type LedgerIdType = <Self::LedgerType as Ledger>::IdType;
         type NodeIdType = PeerId;
         type NodeKeyType = PeerKey;
+        type ClockType = ManualClock;
 
         fn now(&self) -> SystemTime {
-            SystemTime::now()
+            self.clock.borrow().now()
         }
 
         fn acquire(&mut self, ledger_id: &Self::LedgerIdType) -> Option<Self::LedgerType> {
@@ -853,23 +892,27 @@ mod tests {
         }
     }
 
-    type TestValidations<'a> = Validations<TestAdaptor<'a>, ArenaLedgerTrie<SimulatedLedger>>;
+    type TestValidations<'a> = Validations<TestAdaptor<'a>, ArenaLedgerTrie<SimulatedLedger>, ManualClock>;
 
     struct TestHarness<'a> {
         params: ValidationParams,
         pub validations: TestValidations<'a>,
         next_node_id: PeerId,
+        clock: Rc<RefCell<ManualClock>>
     }
 
     impl<'a> TestHarness<'a> {
         pub fn new(oracle: &'a mut LedgerOracle) -> Self {
+            let mut clock = Rc::new(RefCell::new(ManualClock::new()));
             TestHarness {
                 params: Default::default(),
                 validations: Validations::new(
                     ValidationParams::default(),
-                    TestAdaptor::new(oracle),
+                    TestAdaptor::new(oracle, clock.clone()),
+                    clock.clone()
                 ),
                 next_node_id: PeerId(0),
+                clock
             }
         }
 
@@ -879,11 +922,15 @@ mod tests {
 
         pub fn make_node(&mut self) -> TestNode {
             self.next_node_id += 1;
-            TestNode::new(self.next_node_id)
+            TestNode::new(self.next_node_id, self.clock.clone())
         }
 
         pub fn params(&self) -> &ValidationParams {
             &self.params
+        }
+
+        pub fn advance_time(&self, dur: Duration) {
+            self.clock.borrow_mut().now += dur;
         }
     }
 }

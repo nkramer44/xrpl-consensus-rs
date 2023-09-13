@@ -1,5 +1,6 @@
+use std::alloc::System;
 use std::ops::Add;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use xrpl_consensus_core::LedgerIndex;
 use crate::validation_params::ValidationParams;
 
@@ -10,7 +11,7 @@ use crate::validation_params::ValidationParams;
 /// tracked by the instance of this struct.
 pub(crate) struct SeqEnforcer {
     seq: LedgerIndex,
-    when: Instant
+    when: SystemTime
 }
 
 impl SeqEnforcer {
@@ -19,7 +20,7 @@ impl SeqEnforcer {
             seq: 0,
             // TODO: Not clear what this should be. In c++, this is a
             //  std::chrono::steady_clock::time_point, which may default to the start of the Unix epoch
-            when: Instant::now(),
+            when: SystemTime::now(),
         }
     }
 
@@ -36,7 +37,7 @@ impl SeqEnforcer {
     ///
     /// # Returns
     /// A bool indicating whether the validation satisfies the invariant.
-    pub fn advance_ledger(&mut self, now: Instant, seq: LedgerIndex, params: &ValidationParams) -> bool {
+    pub fn advance_ledger(&mut self, now: SystemTime, seq: LedgerIndex, params: &ValidationParams) -> bool {
         if now > self.when.add(params.validation_set_expires()) {
             self.seq = 0;
         }
@@ -54,7 +55,7 @@ impl SeqEnforcer {
         self.seq
     }
 
-    pub fn when(&self) -> Instant {
+    pub fn when(&self) -> SystemTime {
         self.when
     }
 }
@@ -70,7 +71,7 @@ mod tests {
         let mut enforcer = SeqEnforcer::new();
         let when_before_advance = enforcer.when();
         let advanced = enforcer.advance_ledger(
-            Instant::now().add(params.validation_set_expires().add(Duration::from_secs(1))),
+            SystemTime::now().add(params.validation_set_expires().add(Duration::from_secs(1))),
             0,
             &params
         );
@@ -85,7 +86,7 @@ mod tests {
         let params = ValidationParams::default();
         let mut enforcer = SeqEnforcer::new();
         let when_before_advance = enforcer.when;
-        let now = Instant::now().add(params.validation_set_expires().add(Duration::from_secs(1)));
+        let now = SystemTime::now().add(params.validation_set_expires().add(Duration::from_secs(1)));
         let advanced = enforcer.advance_ledger(
             now,
             10,
@@ -102,7 +103,7 @@ mod tests {
     fn advance_returns_false_when_s_less_than_seq() {
         let params = ValidationParams::default();
         let mut enforcer = SeqEnforcer::new();
-        let now = Instant::now();
+        let now = SystemTime::now();
         let advanced = enforcer.advance_ledger(
             now,
             10,
@@ -111,7 +112,7 @@ mod tests {
 
         assert!(advanced);
         let advanced2 = enforcer.advance_ledger(
-            Instant::now(),
+            SystemTime::now(),
             10,
             &params
         );
@@ -119,7 +120,7 @@ mod tests {
         assert!(!advanced2);
 
         let advanced3 = enforcer.advance_ledger(
-            Instant::now(),
+            SystemTime::now(),
             9,
             &params
         );
@@ -134,7 +135,7 @@ mod tests {
     fn advance_succeeds() {
         let params = ValidationParams::default();
         let mut enforcer = SeqEnforcer::new();
-        let now = Instant::now();
+        let now = SystemTime::now();
         let advanced = enforcer.advance_ledger(
             now,
             10,

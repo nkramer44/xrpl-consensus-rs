@@ -32,3 +32,15 @@ pub trait Validation: Copy + Clone {
     fn trusted(&self) -> bool;
     fn full(&self) -> bool;
 }
+
+pub trait NetClock {
+    fn now(&self) -> SystemTime;
+}
+
+pub struct WallNetClock;
+
+impl NetClock for WallNetClock {
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
+    }
+}

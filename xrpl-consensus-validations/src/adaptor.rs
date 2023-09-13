@@ -1,6 +1,6 @@
 use std::hash::Hash;
 use std::time::SystemTime;
-use xrpl_consensus_core::{Ledger, LedgerId, Validation};
+use xrpl_consensus_core::{Ledger, LedgerId, NetClock, Validation};
 
 pub trait Adaptor {
     type ValidationType: Validation<LedgerIdType = Self::LedgerIdType>;
@@ -8,6 +8,7 @@ pub trait Adaptor {
     type LedgerIdType: LedgerId;
     type NodeIdType: Eq + PartialEq + Hash + Copy + Clone;
     type NodeKeyType;
+    type ClockType: NetClock;
 
     fn now(&self) -> SystemTime;
 
