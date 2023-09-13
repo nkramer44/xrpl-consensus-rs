@@ -64,6 +64,8 @@ impl SeqEnforcer {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+    use xrpl_consensus_core::NetClock;
+    use crate::test_utils::ManualClock;
 
     use super::*;
 
@@ -147,5 +149,21 @@ mod tests {
         assert!(advanced);
         assert_eq!(enforcer.largest(), 10);
         assert_eq!(enforcer.when, now);
+    }
+
+    #[test]
+    fn test_seq_enforcer() {
+        let mut enforcer = SeqEnforcer::new();
+        let mut clock = ManualClock::new();
+        let params = ValidationParams::default();
+
+        assert!(enforcer.advance_ledger(clock.now(), 1, &params));
+        assert!(enforcer.advance_ledger(clock.now(), 10, &params));
+        assert!(!enforcer.advance_ledger(clock.now(), 5, &params));
+        assert!(!enforcer.advance_ledger(clock.now(), 9, &params));
+        clock.advance(params.validation_set_expires() - Duration::from_millis(1));
+        assert!(!enforcer.advance_ledger(clock.now(), 1, &params));
+        clock.advance(Duration::from_millis(2));
+        assert!(enforcer.advance_ledger(clock.now(), 1, &params));
     }
 }

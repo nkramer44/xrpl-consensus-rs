@@ -587,6 +587,7 @@ mod tests {
     use crate::adaptor::Adaptor;
     use crate::arena_ledger_trie::ArenaLedgerTrie;
     use crate::test_utils::ledgers::{LedgerHistoryHelper, LedgerOracle, SimulatedLedger};
+    use crate::test_utils::ManualClock;
     use crate::test_utils::validation::{PeerId, PeerKey, TestValidation};
     use crate::validation_params::ValidationParams;
     use crate::validations::{Validations, ValidationStatus};
@@ -920,6 +921,11 @@ mod tests {
     }
 
     #[test]
+    fn test_flush() {
+        todo!()
+    }
+
+    #[test]
     fn test_get_preferred_ledger() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
@@ -981,6 +987,21 @@ mod tests {
         vec![&a, &b, &acd].into_iter().for_each(|ledger| {
             assert_eq!(harness.validations.get_preferred(ledger), Some((acd.seq(), acd.id())));
         })
+    }
+
+    #[test]
+    fn test_get_preferred_lcl() {
+        todo!()
+    }
+
+    #[test]
+    fn test_acquire_validated_ledger() {
+        todo!()
+    }
+
+    #[test]
+    fn test_trust_changed() {
+        todo!()
     }
 
     pub enum DurationOffset {
@@ -1109,24 +1130,6 @@ mod tests {
         }
     }
 
-    pub struct ManualClock {
-        now: SystemTime
-    }
-
-    impl ManualClock {
-        pub fn new() -> Self {
-            ManualClock {
-                now: SystemTime::now()
-            }
-        }
-    }
-
-    impl NetClock for ManualClock {
-        fn now(&self) -> SystemTime {
-            self.now
-        }
-    }
-
     struct TestAdaptor<'a> {
         oracle: &'a mut LedgerOracle,
         clock: Rc<RefCell<ManualClock>>
@@ -1195,8 +1198,8 @@ mod tests {
             &self.params
         }
 
-        pub fn advance_time(&self, dur: Duration) {
-            self.clock.borrow_mut().now += dur;
+        pub fn advance_time(&mut self, dur: Duration) {
+            self.clock.borrow_mut().advance(dur);
         }
     }
 }
