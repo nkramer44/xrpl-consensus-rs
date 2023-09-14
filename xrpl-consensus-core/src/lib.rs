@@ -1,7 +1,9 @@
 pub mod aged_unordered_map;
 
+use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::time::SystemTime;
+use serde::Serialize;
 
 pub type LedgerIndex = u32;
 
@@ -19,7 +21,7 @@ pub trait Ledger: Clone {
     fn mismatch(&self, other: &Self) -> LedgerIndex;
 }
 
-pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + Hash {
+pub trait LedgerId: Eq + PartialEq + Ord + PartialOrd + Copy + Clone + Hash + Serialize + Debug + Display {
 
 }
 

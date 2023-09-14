@@ -1,8 +1,11 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::os::macos::raw::stat;
 
 use generational_arena::{Arena, Index};
+use serde::{Serialize, Serializer};
+use serde::ser::SerializeStruct;
 
 use xrpl_consensus_core::{Ledger, LedgerIndex};
 
@@ -526,6 +529,48 @@ impl<T: Ledger> ArenaLedgerTrie<T> {
     }
 }
 
+struct NodeAndArena<'a, T: Ledger> {
+    node: &'a Node<T>,
+    arena: &'a Arena<Node<T>>
+}
+
+impl<'a, T: Ledger> Serialize for NodeAndArena<'a, T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let mut state = serializer.serialize_struct("Node", 6)?;
+        state.serialize_field("span", &self.node.span.to_string())?;
+        state.serialize_field("start_id", &self.node.span.start_id())?;
+        state.serialize_field("seq", &self.node.span.tip().seq())?;
+        state.serialize_field("tip_support", &self.node.tip_support)?;
+        state.serialize_field("branch_support", &self.node.branch_support)?;
+        if !self.node.children.is_empty() {
+            let child_nodes: Vec<NodeAndArena<T>> = self.node.children.iter()
+                .map(|c| self.arena.get(*c).unwrap())
+                .map(|n| NodeAndArena {
+                    node: n,
+                    arena: &self.arena,
+                })
+                .collect();
+            state.serialize_field("children", &child_nodes)?;
+        }
+        state.end()
+    }
+}
+
+impl<T: Ledger> Serialize for ArenaLedgerTrie<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let mut state = serializer.serialize_struct("trie", 2)?;
+
+        let root = self.arena.get(self.root)
+            .map(|root| NodeAndArena {
+                node: root,
+                arena: &self.arena,
+            }).unwrap();
+        state.serialize_field("trie", &root)?;
+        state.serialize_field("seq_support", &self.seq_support)?;
+        state.end()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::distributions::{Distribution, Uniform};
@@ -535,6 +580,14 @@ mod tests {
     use crate::arena_ledger_trie::ArenaLedgerTrie;
     use crate::ledger_trie::LedgerTrie;
     use crate::test_utils::ledgers::{LedgerHistoryHelper, SimulatedLedger};
+
+    #[test]
+    fn test_json() {
+        let (mut trie, mut h) = setup();
+        let ledger = h.get_or_create("abc");
+        insert(&mut trie, &ledger, None);
+        println!("{}", serde_json::to_string_pretty(&trie).unwrap());
+    }
 
     #[test]
     fn test_insert_single_entry() {
@@ -558,6 +611,7 @@ mod tests {
         // extend with no siblings
         let abcd = h.get_or_create("abcd");
         insert(&mut trie, &abcd, None);
+        println!("{}", serde_json::to_string_pretty(&trie).unwrap());
         assert_eq!(trie.tip_support(&abc), 1);
         assert_eq!(trie.branch_support(&abc), 2);
         assert_eq!(trie.tip_support(&abcd), 1);

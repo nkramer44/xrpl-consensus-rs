@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::ops::{Add, Div, Sub};
 use std::rc::Rc;
@@ -7,13 +8,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bimap::BiMap;
 use derivative::Derivative;
 use once_cell::sync::Lazy;
+use serde::{Serialize, Serializer};
 
 use xrpl_consensus_core::{Ledger, LedgerIndex};
 
 pub(crate) type TxSetType = Vec<Tx>;
 pub(crate) type TxId = u32;
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone, Hash, Debug)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone, Hash, Debug, Serialize)]
 pub(crate) struct LedgerId(u32);
 
 impl LedgerId {
@@ -22,6 +24,11 @@ impl LedgerId {
     }
 }
 
+impl Display for LedgerId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 impl xrpl_consensus_core::LedgerId for LedgerId {
 
 }

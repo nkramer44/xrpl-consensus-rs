@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+use serde::Serialize;
 use xrpl_consensus_core::{Ledger, LedgerIndex};
 
 /// The tip of a span of ledger ancestry.
@@ -8,6 +10,7 @@ pub struct SpanTip<T: Ledger> {
     id: T::IdType,
     ledger: T,
 }
+
 impl<T: Ledger> SpanTip<T> {
     pub(crate) fn new(seq: LedgerIndex, id: T::IdType, ledger: T) -> Self {
         SpanTip {
@@ -43,6 +46,12 @@ pub struct Span<T: Ledger> {
     ledger: T
 }
 
+impl<T: Ledger> Display for Span<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}[{}, {})", self.tip().id(), self.start(), self.end())
+    }
+}
+
 impl<T: Ledger> From<T> for Span<T> {
     fn from(value: T) -> Span<T> {
         Span {
@@ -54,7 +63,6 @@ impl<T: Ledger> From<T> for Span<T> {
 }
 
 impl<T: Ledger> Span<T> {
-
     fn _new(start: LedgerIndex, end: LedgerIndex, ledger: T) -> Self {
         Span {
             start,
