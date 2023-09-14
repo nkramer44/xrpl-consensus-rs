@@ -2,57 +2,16 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
-use std::hash::Hash;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation};
+use xrpl_consensus_core::aged_unordered_map::AgedUnorderedMap;
 
 use crate::adaptor::Adaptor;
 use crate::ledger_trie::LedgerTrie;
 use crate::seq_enforcer::SeqEnforcer;
 use crate::validation_params::ValidationParams;
-
-struct AgedUnorderedMap<K, V, C>
-    where
-        K: Eq + PartialEq + Hash,
-        V: Default,
-        C: NetClock {
-    // TODO: This should be a port/replica of beast::aged_unordered_map. The only
-    //  difference between a HashMap and beast::aged_unordered_map is that you can
-    //  expire entries, but for simplicity's sake, we can just not expire entries.
-    inner: HashMap<K, V>,
-    clock: Rc<RefCell<C>>,
-}
-
-impl<K: Eq + PartialEq + Hash, V: Default, C: NetClock> AgedUnorderedMap<K, V, C> {
-    pub fn new(clock: Rc<RefCell<C>>) -> Self {
-        AgedUnorderedMap {
-            inner: Default::default(),
-            clock,
-        }
-    }
-
-    pub fn now(&self) -> SystemTime {
-        self.clock.borrow().now()
-    }
-
-    pub fn get_or_insert(&mut self, k: K) -> &V {
-        self.get_or_insert_mut(k)
-    }
-
-    pub fn get_or_insert_mut(&mut self, k: K) -> &mut V {
-        self.inner.entry(k).or_default()
-    }
-
-    pub fn get(&self, k: &K) -> Option<&V> {
-        self.inner.get(k)
-    }
-
-    fn touch(&self, k: &K) {
-        // TODO: Update the timestamp on the entry
-    }
-}
 
 struct KeepRange {
     pub low: LedgerIndex,
