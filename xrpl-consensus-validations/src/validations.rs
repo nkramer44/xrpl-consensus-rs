@@ -5,7 +5,7 @@ use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation};
+use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation, WallNetClock};
 use xrpl_consensus_core::aged_unordered_map::AgedUnorderedMap;
 
 use crate::adaptor::Adaptor;
@@ -18,7 +18,7 @@ struct KeepRange {
     pub high: LedgerIndex,
 }
 
-pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> {
+pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock = WallNetClock> {
     /// Manages concurrent access to members
     // TODO: Do we need a Mutex here, or should we create another struct that has one field, a Mutex<Validations>?
     //   I think the latter. see https://stackoverflow.com/questions/57256035/how-to-lock-a-rust-struct-the-way-a-struct-is-locked-in-go

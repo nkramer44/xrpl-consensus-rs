@@ -3,11 +3,16 @@
 
 pub mod validations;
 pub mod adaptor;
-pub mod ledger_trie;
+pub(crate) mod ledger_trie;
 pub mod validation_params;
-pub mod seq_enforcer;
-pub mod span;
-pub mod arena_ledger_trie;
+pub(crate) mod seq_enforcer;
+pub(crate) mod span;
+pub(crate) mod arena_ledger_trie;
+
+pub use validations::Validations;
+pub use validations::ValidationStatus;
+pub use adaptor::Adaptor;
+pub use validation_params::ValidationParams;
 
 #[cfg(test)]
 mod test_utils;
