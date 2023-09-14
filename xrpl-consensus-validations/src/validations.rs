@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +19,19 @@ struct KeepRange {
     pub high: LedgerIndex,
 }
 
+/// Maintains current and recent ledger validations.
+///
+/// Manages storage and queries related to validations received on the network.
+/// Stores the most current validation from nodes and sets of recent
+/// validations grouped by ledger identifier.
+///
+/// Stored validations are not necessarily from trusted nodes, so clients
+/// and implementations should take care to use `trusted` member functions or
+/// check the validation's trusted status.
+///
+/// This class uses a generic interface to allow adapting Validations for
+/// specific applications. The Adaptor trait implements a set of helper
+/// functions and type definitions.
 pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock = WallNetClock> {
     /// Manages concurrent access to members
     // TODO: Do we need a Mutex here, or should we create another struct that has one field, a Mutex<Validations>?
@@ -89,14 +103,21 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         self.local_seq_enforcer.advance_ledger(self.by_ledger.now(), seq, &self.params)
     }
 
-    pub fn add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> ValidationStatus {
+    /// Attempt to add a new validation.
+    ///
+    /// # Params
+    /// - **node_id**: The identity of the node issuing this validation.
+    /// - **validation**: The validation to store.
+    ///
+    /// Returns `Ok(())` if the validation was added, or an `Err(ValidationError)` if not.
+    pub fn try_add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> Result<(), ValidationError> {
         if !Self::_is_current(
             self.params(),
             &self.adaptor().now(),
             &validation.sign_time(),
             &validation.seen_time(),
         ) {
-            return ValidationStatus::Stale;
+            return Err(ValidationError::Stale);
         }
 
         // Check that validation sequence is greater than any non-expired
@@ -134,7 +155,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 // ledgers. This could be the result of misconfiguration
                 // but it can also mean a Byzantine validator.
                 if inserted.ledger_id() != validation.ledger_id() {
-                    return ValidationStatus::Conflicting;
+                    return Err(ValidationError::Conflicting);
                 }
 
                 // Two validations for the same sequence and for the same
@@ -142,17 +163,17 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 // result of a misconfiguration but it can also mean a
                 // Byzantine validator.
                 if inserted.sign_time() != validation.sign_time() {
-                    return ValidationStatus::Conflicting;
+                    return Err(ValidationError::Conflicting);
                 }
 
                 // Two validations for the same sequence but with different
                 // cookies. This is probably accidental misconfiguration.
                 if inserted.cookie() != validation.cookie() {
-                    return ValidationStatus::Multiple;
+                    return Err(ValidationError::Multiple);
                 }
             }
 
-            return ValidationStatus::BadSeq;
+            return Err(ValidationError::BadSeq);
         }
 
         self.by_ledger.get_or_insert_mut(validation.ledger_id()).insert(*node_id, *validation);
@@ -167,7 +188,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                         self._process_validation(node_id, validation, Some(old));
                     }
                 } else {
-                    return ValidationStatus::Stale;
+                    return Err(ValidationError::Stale);
                 }
             }
             Entry::Vacant(e) => {
@@ -177,17 +198,30 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 }
             }
         }
-        return ValidationStatus::Current;
+        return Ok(());
     }
 
-    pub fn set_seq_to_keep(&mut self, low: &LedgerIndex, high: &LedgerIndex) {
+    /// Set the range of validations to keep from expiring.
+    pub fn set_seq_to_keep(&mut self, range: Range<LedgerIndex>) {
         todo!()
     }
 
+    /// Expire old validation sets. Removes validation sets that were accessed more than
+    /// this `Validations`' `ValidationParams.validation_set_expires()` ago and were not asked
+    /// to keep around.
     pub fn expire(&mut self) {
         todo!()
     }
 
+    /// Update the trust status of validations.
+    ///
+    /// Updates the trusted status of known validations to account for nodes that have been added or
+    /// removed from the UNL. This also updates the trie to ensure only currently trusted nodes'
+    /// validations are used.
+    ///
+    /// # Params
+    /// - **added**: A `&HashSet` of identifiers of nodes that are not trusted.
+    /// - **removed**: A `&HashSet` of identifiers of nodes that are no longer trusted.
     pub fn trust_changed(
         &mut self,
         added: &HashSet<A::NodeIdType>,
@@ -317,6 +351,15 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
             )
     }
 
+    /// Count the number of current trusted validators working on a ledger after the specified
+    /// ledger.
+    ///
+    /// # Params
+    /// - **ledger**: The working ledger.
+    /// - **ledger_id**: The preferred ledger ID.
+    ///
+    /// Returns the number of current trusted validators working on a descendant of the preferred
+    /// ledger.
     pub fn get_nodes_after(&mut self, ledger: &A::LedgerType, ledger_id: A::LedgerIdType) -> usize {
         // Use trie if ledger is the right one
         if ledger.id() == ledger_id {
@@ -333,6 +376,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         }).count();
     }
 
+    /// Get the currently trusted full validations.
     pub fn current_trusted(&mut self) -> Vec<A::ValidationType> {
         let mut ret = Vec::with_capacity(self.current.len());
         self._current(
@@ -346,6 +390,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         ret
     }
 
+    /// Get the set of the node IDs associated with current validations.
     pub fn get_current_node_ids(&mut self) -> HashSet<A::NodeIdType> {
         let mut ret = HashSet::with_capacity(self.current.len());
         self._current(
@@ -357,6 +402,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         ret
     }
 
+    /// Count the number of trusted full validations for the given ledger.
     pub fn num_trusted_for_ledger(&mut self, ledger_id: &A::LedgerIdType) -> usize {
         self._by_ledger(
             ledger_id,
@@ -369,6 +415,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         )
     }
 
+    /// Get a `Vec` of trusted full validations for a specific ledger.
     pub fn get_trusted_for_ledger(
         &mut self,
         ledger_id: &A::LedgerIdType,
@@ -387,6 +434,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         )
     }
 
+    /// Returns fees reported by trusted full validators in the given ledger, as a `Vec<u32>`.
     pub fn fees(
         &mut self,
         ledger_id: &A::LedgerIdType,
@@ -406,10 +454,17 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         )
     }
 
+    /// Flush all current validations.
     pub fn flush(&mut self) {
-        todo!()
+        self.current.clear();
     }
 
+    /// Return the quantity of lagging proposers, and remove online proposers for purposes of
+    /// evaluating whether to pause.
+    ///
+    /// Laggards are the trusted proposers whose sequence number is lower than the sequence number
+    /// from which our current pending proposal is based. Proposers from whom we have not
+    /// received a validation for awhile are considered offline.
     pub fn laggards(&mut self, seq: LedgerIndex, trusted_keys: HashSet<&mut A::NodeKeyType>) -> usize {
         todo!()
     }
@@ -565,12 +620,16 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
     }
 }
 
+/// Errors related to validations we received.
 #[derive(Eq, PartialEq, Debug)]
-pub enum ValidationStatus {
-    Current,
+pub enum ValidationError {
+    /// Validation is not current or was older than the current validation from this node.
     Stale,
+    /// A validation violates the increasing sequence requirement.
     BadSeq,
+    /// Multiple validations by a validator for the same ledger.
     Multiple,
+    /// Multiple validations by a validator for different ledgers.
     Conflicting,
 }
 
@@ -590,7 +649,7 @@ mod tests {
     use crate::test_utils::ManualClock;
     use crate::test_utils::validation::{PeerId, PeerKey, TestValidation};
     use crate::validation_params::ValidationParams;
-    use crate::validations::{Validations, ValidationStatus};
+    use crate::validations::{Validations, ValidationError};
 
     #[test]
     fn test_add_validations() {
@@ -605,15 +664,15 @@ mod tests {
         let mut harness = TestHarness::new(h.oracle_mut());
         let mut node = harness.make_node();
         let v = node.validate_ledger(&a);
-        assert_eq!(harness.add(&v), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&v), Ok(()));
 
         // Re-adding violates the increasing seq requirement for full
         // validations
-        assert_eq!(harness.add(&v), ValidationStatus::BadSeq);
+        assert_eq!(harness.try_add(&v), Err(ValidationError::BadSeq));
 
         harness.advance_time(Duration::from_secs(1));
 
-        assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&node.validate_ledger(&ab)), Ok(()));
 
         // Test the node changing signing key
 
@@ -629,14 +688,14 @@ mod tests {
         harness.advance_time(Duration::from_secs(1));
 
         // Cannot re-do the same full validation sequence
-        assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Conflicting);
+        assert_eq!(harness.try_add(&node.validate_ledger(&ab)), Err(ValidationError::Conflicting));
 
         // Cannot send the same partial validation sequence
-        assert_eq!(harness.add(&node.partial(&ab)), ValidationStatus::Conflicting);
+        assert_eq!(harness.try_add(&node.partial(&ab)), Err(ValidationError::Conflicting));
 
         // Now trusts the newest ledger too
         harness.advance_time(Duration::from_secs(1));
-        assert_eq!(harness.add(&node.validate_ledger(&abc)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&node.validate_ledger(&abc)), Ok(()));
         assert_eq!(harness.validations.num_trusted_for_ledger(&ab.id()), 1);
         assert_eq!(harness.validations.num_trusted_for_ledger(&abc.id()), 1);
 
@@ -647,8 +706,8 @@ mod tests {
         harness.advance_time(Duration::from_secs(4));
         let val_abcd = node.validate_ledger(&abcd);
 
-        assert_eq!(harness.add(&val_abcd), ValidationStatus::Current);
-        assert_eq!(harness.add(&val_abcde), ValidationStatus::Stale);
+        assert_eq!(harness.try_add(&val_abcd), Ok(()));
+        assert_eq!(harness.try_add(&val_abcde), Err(ValidationError::Stale));
     }
 
     #[test]
@@ -665,22 +724,22 @@ mod tests {
         let node = harness.make_node();
 
         // Establish a new current validation
-        assert_eq!(harness.add(&node.validate_ledger(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&node.validate_ledger(&a)), Ok(()));
 
         // Process a validation that has "later" seq but early sign time
-        assert_eq!(harness.add(&node.validate_full(
+        assert_eq!(harness.try_add(&node.validate_full(
             &ab,
             DurationOffset::Minus(Duration::from_secs(1)),
             DurationOffset::Minus(Duration::from_secs(1)),
-        )), ValidationStatus::Stale);
+        )), Err(ValidationError::Stale));
 
         // Process a validation that has a later seq and later sign
         // time
-        assert_eq!(harness.add(&node.validate_full(
+        assert_eq!(harness.try_add(&node.validate_full(
             &abc,
             DurationOffset::Plus(Duration::from_secs(1)),
             DurationOffset::Plus(Duration::from_secs(1)),
-        )), ValidationStatus::Current);
+        )), Ok(()));
     }
 
     #[test]
@@ -696,30 +755,30 @@ mod tests {
         let mut harness = TestHarness::new(h.oracle_mut());
         let node = harness.make_node();
         assert_eq!(
-            harness.add(&node.validate_full(
+            harness.try_add(&node.validate_full(
                 &a,
                 DurationOffset::Minus(harness.params().validation_current_early()),
                 DurationOffset::Zero,
             )),
-            ValidationStatus::Stale
+            Err(ValidationError::Stale)
         );
 
         assert_eq!(
-            harness.add(&node.validate_full(
+            harness.try_add(&node.validate_full(
                 &a,
                 DurationOffset::Plus(harness.params().validation_current_wall()),
                 DurationOffset::Zero,
             )),
-            ValidationStatus::Stale
+            Err(ValidationError::Stale)
         );
 
         assert_eq!(
-            harness.add(&node.validate_full(
+            harness.try_add(&node.validate_full(
                 &a,
                 DurationOffset::Zero,
                 DurationOffset::Plus(harness.params().validation_current_local()),
             )),
-            ValidationStatus::Stale
+            Err(ValidationError::Stale)
         );
     }
 
@@ -739,22 +798,22 @@ mod tests {
 
             let process = |harness: &mut TestHarness, ledger: &SimulatedLedger| {
                 if do_full {
-                    harness.add(&node.validate_ledger(ledger))
+                    harness.try_add(&node.validate_ledger(ledger))
                 } else {
-                    harness.add(&node.partial(ledger))
+                    harness.try_add(&node.partial(ledger))
                 }
             };
 
-            assert_eq!(process(&mut harness, &abc), ValidationStatus::Current);
+            assert_eq!(process(&mut harness, &abc), Ok(()));
             harness.advance_time(Duration::from_secs(1));
             assert!(ab.seq() < abc.seq());
-            assert_eq!(process(&mut harness, &ab), ValidationStatus::BadSeq);
+            assert_eq!(process(&mut harness, &ab), Err(ValidationError::BadSeq));
 
             // If we advance far enough for AB to expire, we can fully
             // validate or partially validate that sequence number again
-            assert_eq!(process(&mut harness, &az), ValidationStatus::Conflicting);
+            assert_eq!(process(&mut harness, &az), Err(ValidationError::Conflicting));
             harness.advance_time(harness.params().validation_set_expires() + Duration::from_millis(1));
-            assert_eq!(process(&mut harness, &az), ValidationStatus::Current);
+            assert_eq!(process(&mut harness, &az), Ok(()));
         };
 
         do_test(true);
@@ -782,7 +841,7 @@ mod tests {
             let mut harness = TestHarness::new(h.oracle_mut());
             let node = harness.make_node();
 
-            assert_eq!(harness.add(&node.validate_ledger(&ab)), ValidationStatus::Current);
+            assert_eq!(harness.try_add(&node.validate_ledger(&ab)), Ok(()));
             trigger(&mut harness.validations);
             assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 1);
             assert_eq!(
@@ -817,10 +876,10 @@ mod tests {
         let d_node = harness.make_node();
         c_node.untrust();
 
-        assert_eq!(harness.add(&a_node.validate_ledger(&a)), ValidationStatus::Current);
-        assert_eq!(harness.add(&b_node.validate_ledger(&a)), ValidationStatus::Current);
-        assert_eq!(harness.add(&c_node.validate_ledger(&a)), ValidationStatus::Current);
-        assert_eq!(harness.add(&d_node.partial(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&c_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&d_node.partial(&a)), Ok(()));
 
         vec![&a, &ab, &abc, &ad].into_iter().for_each(|ledger| {
             assert_eq!(harness.validations.get_nodes_after(ledger, ledger.id()), 0);
@@ -828,10 +887,10 @@ mod tests {
 
         harness.advance_time(Duration::from_secs(5));
 
-        assert_eq!(harness.add(&a_node.validate_ledger(&ab)), ValidationStatus::Current);
-        assert_eq!(harness.add(&b_node.validate_ledger(&abc)), ValidationStatus::Current);
-        assert_eq!(harness.add(&c_node.validate_ledger(&ab)), ValidationStatus::Current);
-        assert_eq!(harness.add(&d_node.partial(&abc)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&ab)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&abc)), Ok(()));
+        assert_eq!(harness.try_add(&c_node.validate_ledger(&ab)), Ok(()));
+        assert_eq!(harness.try_add(&d_node.partial(&abc)), Ok(()));
 
         assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 3);
         assert_eq!(harness.validations.get_nodes_after(&ab, ab.id()), 2);
@@ -856,8 +915,8 @@ mod tests {
         let mut b_node = harness.make_node();
         b_node.untrust();
 
-        assert_eq!(harness.add(&a_node.validate_ledger(&a)), ValidationStatus::Current);
-        assert_eq!(harness.add(&b_node.validate_ledger(&b)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&b)), Ok(()));
 
         // Only a_node is trusted
         assert_eq!(harness.validations.current_trusted().len(), 1);
@@ -866,8 +925,8 @@ mod tests {
 
         harness.advance_time(Duration::from_secs(3));
 
-        assert_eq!(harness.add(&a_node.validate_ledger(&ac)), ValidationStatus::Current);
-        assert_eq!(harness.add(&b_node.validate_ledger(&ac)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&ac)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&ac)), Ok(()));
 
         // New validation for a_node
         assert_eq!(harness.validations.current_trusted().len(), 1);
@@ -890,8 +949,8 @@ mod tests {
         let mut b_node = harness.make_node();
         b_node.untrust();
 
-        assert_eq!(harness.add(&a_node.validate_ledger(&a)), ValidationStatus::Current);
-        assert_eq!(harness.add(&b_node.validate_ledger(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)), Ok(()));
 
         assert_eq!(harness.validations.get_current_node_ids(), HashSet::from([a_node.node_id(), b_node.node_id()]));
 
@@ -901,8 +960,8 @@ mod tests {
         a_node.advance_key();
         b_node.advance_key();
 
-        assert_eq!(harness.add(&a_node.partial(&ac)), ValidationStatus::Current);
-        assert_eq!(harness.add(&b_node.partial(&ac)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.partial(&ac)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.partial(&ac)), Ok(()));
 
         assert_eq!(harness.validations.get_current_node_ids(), HashSet::from([a_node.node_id(), b_node.node_id()]));
 
@@ -946,7 +1005,7 @@ mod tests {
         // first round a,b,c agree
         vec![&a_node, &b_node, &c_node].into_iter().for_each(|node| {
             let val = node.validate_ledger(&a);
-            assert_eq!(harness.add(&val), ValidationStatus::Current);
+            assert_eq!(harness.try_add(&val), Ok(()));
             if val.trusted() {
                 trusted_validations.entry((val.ledger_id(), val.seq())).or_default()
                     .push(val);
@@ -955,17 +1014,17 @@ mod tests {
 
         // d disagrees
         let val = d_node.validate_ledger(&b);
-        assert_eq!(harness.add(&val), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&val), Ok(()));
         trusted_validations.entry((val.ledger_id(), val.seq())).or_default().push(val);
 
         // e only issued partials
-        assert_eq!(harness.add(&e_node.partial(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&e_node.partial(&a)), Ok(()));
 
         harness.advance_time(Duration::from_secs(5));
         // second round, a,b,c move to ledger 2
         vec![&a_node, &b_node, &c_node].into_iter().for_each(|node| {
             let val = node.validate_ledger(&ac);
-            assert_eq!(harness.add(&val), ValidationStatus::Current);
+            assert_eq!(harness.try_add(&val), Ok(()));
             if val.trusted() {
                 trusted_validations.entry((val.ledger_id(), val.seq())).or_default()
                     .push(val);
@@ -974,10 +1033,10 @@ mod tests {
 
         // d now thinks ledger 1, but cannot re-issue a previously used seq
         // and attempting it should generate a conflict.
-        assert_eq!(harness.add(&d_node.partial(&a)), ValidationStatus::Conflicting);
+        assert_eq!(harness.try_add(&d_node.partial(&a)), Err(ValidationError::Conflicting));
 
         // e only issues partials
-        assert_eq!(harness.add(&e_node.partial(&ac)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&e_node.partial(&ac)), Ok(()));
 
         trusted_validations.iter_mut().for_each(|((id, seq), vals)| {
             assert_eq!(harness.validations.num_trusted_for_ledger(id), vals.len());
@@ -1032,7 +1091,7 @@ mod tests {
         assert!(harness.validations.get_preferred(&a).is_none());
 
         // Single ledger
-        assert_eq!(harness.add(&a_node.validate_ledger(&b)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&b)), Ok(()));
         assert_eq!(harness.validations.get_preferred(&a), Some((b.seq(), b.id())));
         assert_eq!(harness.validations.get_preferred(&b), Some((b.seq(), b.id())));
 
@@ -1041,14 +1100,14 @@ mod tests {
 
         // Untrusted doesn't impact preferred ledger
         // (ledger a has tie-break over ledger b)
-        assert_eq!(harness.add(&b_node.validate_ledger(&a)), ValidationStatus::Current);
-        assert_eq!(harness.add(&c_node.validate_ledger(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&c_node.validate_ledger(&a)), Ok(()));
         assert!(b.id() > a.id());
         assert_eq!(harness.validations.get_preferred(&a), Some((b.seq(), b.id())));
         assert_eq!(harness.validations.get_preferred(&b), Some((b.seq(), b.id())));
 
         // Partial does break ties
-        assert_eq!(harness.add(&d_node.partial(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&d_node.partial(&a)), Ok(()));
         assert_eq!(harness.validations.get_preferred(&a), Some((a.seq(), a.id())));
         assert_eq!(harness.validations.get_preferred(&b), Some((a.seq(), a.id())));
 
@@ -1056,7 +1115,7 @@ mod tests {
 
         // Parent of preferred-> stick with ledger
         vec![&a_node, &b_node, &c_node, &d_node].into_iter().for_each(|node| {
-            assert_eq!(harness.add(&node.validate_ledger(&ac)), ValidationStatus::Current);
+            assert_eq!(harness.try_add(&node.validate_ledger(&ac)), Ok(()));
         });
 
         // Parent of preferred stays put
@@ -1069,7 +1128,7 @@ mod tests {
         // Any later grandchild or different chain is preferred
         harness.advance_time(Duration::from_secs(5));
         vec![&a_node, &b_node, &c_node, &d_node].into_iter().for_each(|node| {
-            assert_eq!(harness.add(&node.validate_ledger(&acd)), ValidationStatus::Current);
+            assert_eq!(harness.try_add(&node.validate_ledger(&acd)), Ok(()));
         });
 
         vec![&a, &b, &acd].into_iter().for_each(|ledger| {
@@ -1107,7 +1166,7 @@ mod tests {
         *peer_counts.get_mut(&c.id()).unwrap() += 1000;
 
         // Single trusted always wins over peer counts
-        assert_eq!(harness.add(&a_node.validate_ledger(&a)), ValidationStatus::Current);
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
         assert_eq!(harness.validations.get_preferred_lcl(&a, 0, &peer_counts), a.id());
         assert_eq!(harness.validations.get_preferred_lcl(&b, 0, &peer_counts), a.id());
         assert_eq!(harness.validations.get_preferred_lcl(&c, 0, &peer_counts), a.id());
@@ -1308,8 +1367,8 @@ mod tests {
             }
         }
 
-        pub fn add(&mut self, v: &TestValidation) -> ValidationStatus {
-            self.validations.add(&v.node_id(), v)
+        pub fn try_add(&mut self, v: &TestValidation) -> Result<(), ValidationError> {
+            self.validations.try_add(&v.node_id(), v)
         }
 
         pub fn make_node(&mut self) -> TestNode {

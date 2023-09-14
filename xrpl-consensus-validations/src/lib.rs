@@ -10,7 +10,7 @@ pub(crate) mod span;
 pub(crate) mod arena_ledger_trie;
 
 pub use validations::Validations;
-pub use validations::ValidationStatus;
+pub use validations::ValidationError;
 pub use adaptor::Adaptor;
 pub use validation_params::ValidationParams;
 
