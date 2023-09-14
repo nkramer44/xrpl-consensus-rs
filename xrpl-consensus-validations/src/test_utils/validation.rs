@@ -97,10 +97,6 @@ impl TestValidation {
         &self.key
     }
 
-    pub(crate) fn load_fee(&self) -> Option<u32> {
-        self.load_fee
-    }
-
     pub(crate) fn set_trusted(&mut self) {
         self.trusted = true;
     }
@@ -143,5 +139,9 @@ impl Validation for TestValidation {
 
     fn full(&self) -> bool {
         self.full
+    }
+
+    fn load_fee(&self) -> Option<u32> {
+        self.load_fee
     }
 }

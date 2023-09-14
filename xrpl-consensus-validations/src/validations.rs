@@ -22,7 +22,7 @@ struct AgedUnorderedMap<K, V, C>
     //  difference between a HashMap and beast::aged_unordered_map is that you can
     //  expire entries, but for simplicity's sake, we can just not expire entries.
     inner: HashMap<K, V>,
-    clock: Rc<RefCell<C>>
+    clock: Rc<RefCell<C>>,
 }
 
 impl<K: Eq + PartialEq + Hash, V: Default, C: NetClock> AgedUnorderedMap<K, V, C> {
@@ -330,13 +330,32 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
             )
     }
 
-    pub fn get_prefered_lcl(
+    pub fn get_preferred_lcl(
         &mut self,
         lcl: &A::LedgerType,
         min_seq: LedgerIndex,
-        peer_counts: HashMap<A::LedgerIdType, u32>,
+        peer_counts: &HashMap<A::LedgerIdType, u32>,
     ) -> A::LedgerIdType {
-        todo!()
+        let preferred = self.get_preferred(lcl);
+
+        // Trusted validations exist, but stick with local preferred ledger if
+        // preferred is in the past
+        if let Some(preferred) = preferred {
+            return if preferred.0 > min_seq {
+                preferred.1
+            } else {
+                lcl.id()
+            };
+        }
+
+        peer_counts.into_iter()
+            .max_by(|(id, count), (id2, count2)| {
+                (count, id).cmp(&(count2, id2))
+            })
+            .map_or_else(
+                || lcl.id(),
+                |(max_id, max_count)| *max_id,
+            )
     }
 
     pub fn get_nodes_after(&mut self, ledger: &A::LedgerType, ledger_id: A::LedgerIdType) -> usize {
@@ -352,7 +371,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         // Otherwise count parent ledgers as a fallback
         return self.last_ledger.values().filter(|curr| {
             curr.seq() > 0 && curr.get_ancestor(curr.seq() - 1) == ledger_id
-        }).count()
+        }).count();
     }
 
     pub fn current_trusted(&mut self) -> Vec<A::ValidationType> {
@@ -380,25 +399,33 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
     }
 
     pub fn num_trusted_for_ledger(&mut self, ledger_id: &A::LedgerIdType) -> usize {
-        let mut count = 0;
         self._by_ledger(
             ledger_id,
-            |_| {},
-            |node_id, val| {
+            |_| { 0 },
+            |node_id, val, ret| {
                 if val.trusted() && val.full() {
-                    count += 1;
+                    *ret += 1;
                 }
             },
-        );
-        count
+        )
     }
 
     pub fn get_trusted_for_ledger(
         &mut self,
         ledger_id: &A::LedgerIdType,
-        seq: LedgerIndex,
+        seq: &LedgerIndex,
     ) -> Vec<A::ValidationType> {
-        todo!()
+        self._by_ledger(
+            ledger_id,
+            |num_validations| {
+                Vec::with_capacity(num_validations)
+            },
+            |node_id, val, ret| {
+                if val.trusted() && val.full() && &val.seq() == seq {
+                    ret.push(*val);
+                }
+            },
+        )
     }
 
     pub fn fees(
@@ -406,7 +433,18 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         ledger_id: &A::LedgerIdType,
         base_fee: u32,
     ) -> Vec<u32> {
-        todo!()
+        self._by_ledger(
+            ledger_id,
+            |num_validations| { Vec::with_capacity(num_validations) },
+            |node_id, val, ret| {
+                if val.trusted() && val.full() {
+                    match val.load_fee() {
+                        None => { ret.push(base_fee) }
+                        Some(load_fee) => { ret.push(load_fee) }
+                    }
+                }
+            },
+        )
     }
 
     pub fn flush(&mut self) {
@@ -546,21 +584,24 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
             ((seen_time == &UNIX_EPOCH) || (seen_time < &(*now + p.validation_current_local())));
     }
 
-    fn _by_ledger<Pre, F>(
+    fn _by_ledger<Pre, PreR, F>(
         &mut self,
         ledger_id: &A::LedgerIdType,
         pre: Pre,
         mut f: F,
-    ) where
-        Pre: FnOnce(usize),
-        F: FnMut(&A::NodeIdType, &A::ValidationType) {
+    ) -> PreR where
+        Pre: FnOnce(usize) -> PreR,
+        F: FnMut(&A::NodeIdType, &A::ValidationType, &mut PreR), {
         if let Some(vals) = self.by_ledger.get(ledger_id) {
             self.by_ledger.touch(ledger_id);
-            pre(vals.len());
+            let mut pre_ret = pre(vals.len());
             vals.iter()
                 .for_each(|(node_id, val)| {
-                    f(node_id, val)
+                    f(node_id, val, &mut pre_ret)
                 });
+            pre_ret
+        } else {
+            pre(0)
         }
     }
 }
@@ -578,7 +619,7 @@ pub enum ValidationStatus {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
     use std::time::{Duration, SystemTime};
 
@@ -586,7 +627,7 @@ mod tests {
 
     use crate::adaptor::Adaptor;
     use crate::arena_ledger_trie::ArenaLedgerTrie;
-    use crate::test_utils::ledgers::{LedgerHistoryHelper, LedgerOracle, SimulatedLedger};
+    use crate::test_utils::ledgers::{LedgerHistoryHelper, LedgerId, LedgerOracle, SimulatedLedger};
     use crate::test_utils::ManualClock;
     use crate::test_utils::validation::{PeerId, PeerKey, TestValidation};
     use crate::validation_params::ValidationParams;
@@ -910,19 +951,107 @@ mod tests {
         assert!(harness.validations.get_current_node_ids().is_empty());
     }
 
+    /// Test the Validations functions that calculate a value by ledger ID.
+    ///
+    /// Several Validations functions return a set of values associated
+    /// with trusted ledgers sharing the same ledger ID.  The tests below
+    /// exercise this logic by saving the set of trusted Validations, and
+    /// verifying that the Validations member functions all calculate the
+    /// proper transformation of the available ledgers.
     #[test]
     fn test_trusted_by_ledger() {
-        todo!()
+        let mut h = LedgerHistoryHelper::new();
+
+        let a = h.get_or_create("a");
+        let b = h.get_or_create("b");
+        let ac = h.get_or_create("ac");
+
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let mut a_node = harness.make_node();
+        let mut b_node = harness.make_node();
+        let mut c_node = harness.make_node();
+        let d_node = harness.make_node();
+        let mut e_node = harness.make_node();
+        c_node.untrust();
+
+        a_node.set_load_fee(12);
+        b_node.set_load_fee(1);
+        c_node.set_load_fee(12);
+        e_node.set_load_fee(12);
+
+        let mut trusted_validations: HashMap<(LedgerId, LedgerIndex), Vec<TestValidation>> = HashMap::new();
+
+        // Add a dummy ID to cover unknown ledger identifiers
+        trusted_validations.insert((LedgerId::new(100), 100), vec![]);
+
+        // first round a,b,c agree
+        vec![&a_node, &b_node, &c_node].into_iter().for_each(|node| {
+            let val = node.validate_ledger(&a);
+            assert_eq!(harness.add(&val), ValidationStatus::Current);
+            if val.trusted() {
+                trusted_validations.entry((val.ledger_id(), val.seq())).or_default()
+                    .push(val);
+            }
+        });
+
+        // d disagrees
+        let val = d_node.validate_ledger(&b);
+        assert_eq!(harness.add(&val), ValidationStatus::Current);
+        trusted_validations.entry((val.ledger_id(), val.seq())).or_default().push(val);
+
+        // e only issued partials
+        assert_eq!(harness.add(&e_node.partial(&a)), ValidationStatus::Current);
+
+        harness.advance_time(Duration::from_secs(5));
+        // second round, a,b,c move to ledger 2
+        vec![&a_node, &b_node, &c_node].into_iter().for_each(|node| {
+            let val = node.validate_ledger(&ac);
+            assert_eq!(harness.add(&val), ValidationStatus::Current);
+            if val.trusted() {
+                trusted_validations.entry((val.ledger_id(), val.seq())).or_default()
+                    .push(val);
+            }
+        });
+
+        // d now thinks ledger 1, but cannot re-issue a previously used seq
+        // and attempting it should generate a conflict.
+        assert_eq!(harness.add(&d_node.partial(&a)), ValidationStatus::Conflicting);
+
+        // e only issues partials
+        assert_eq!(harness.add(&e_node.partial(&ac)), ValidationStatus::Current);
+
+        trusted_validations.iter_mut().for_each(|((id, seq), vals)| {
+            assert_eq!(harness.validations.num_trusted_for_ledger(id), vals.len());
+            let mut trusted = harness.validations.get_trusted_for_ledger(id, seq);
+            trusted.sort();
+            vals.sort();
+            assert_eq!(
+                &mut trusted,
+                vals
+            );
+
+            let base_fee = 0;
+            let mut expected_fees: Vec<u32> = vals.iter()
+                .map(|val| val.load_fee().unwrap_or(base_fee))
+                .collect();
+            expected_fees.sort();
+            let mut fees = harness.validations.fees(id, base_fee);
+            fees.sort();
+            assert_eq!(
+                fees,
+                expected_fees
+            );
+        })
     }
 
     #[test]
     fn test_expire() {
-        todo!()
+        // TODO: Implement this if we ever implement expire()
     }
 
     #[test]
     fn test_flush() {
-        todo!()
+        // TODO: Implement this if we ever implement flush()
     }
 
     #[test]
@@ -991,7 +1120,42 @@ mod tests {
 
     #[test]
     fn test_get_preferred_lcl() {
-        todo!()
+        let mut h = LedgerHistoryHelper::new();
+        let a = h.get_or_create("a");
+        let b = h.get_or_create("b");
+        let c = h.get_or_create("c");
+
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let a_node = harness.make_node();
+
+        let mut peer_counts = HashMap::new();
+
+        // No trusted validations or counts sticks with current ledger
+        assert_eq!(harness.validations.get_preferred_lcl(&a, 0, &peer_counts), a.id());
+
+        peer_counts.insert(b.id(), 1);
+
+        // No trusted validations, rely on peer counts
+        assert_eq!(harness.validations.get_preferred_lcl(&a, 0, &peer_counts), b.id());
+
+        peer_counts.insert(c.id(), 1);
+
+        // No trusted validations, tied peers goes with larger ID
+        assert!(c.id() > b.id());
+
+        assert_eq!(harness.validations.get_preferred_lcl(&a, 0, &peer_counts), c.id());
+
+        *peer_counts.get_mut(&c.id()).unwrap() += 1000;
+
+        // Single trusted always wins over peer counts
+        assert_eq!(harness.add(&a_node.validate_ledger(&a)), ValidationStatus::Current);
+        assert_eq!(harness.validations.get_preferred_lcl(&a, 0, &peer_counts), a.id());
+        assert_eq!(harness.validations.get_preferred_lcl(&b, 0, &peer_counts), a.id());
+        assert_eq!(harness.validations.get_preferred_lcl(&c, 0, &peer_counts), a.id());
+
+        // Stick with current ledger if trusted validation ledger has too old
+        // of a sequence
+        assert_eq!(harness.validations.get_preferred_lcl(&b, 2, &peer_counts), b.id());
     }
 
     #[test]
@@ -1007,7 +1171,7 @@ mod tests {
     pub enum DurationOffset {
         Plus(Duration),
         Minus(Duration),
-        Zero
+        Zero,
     }
 
     impl DurationOffset {
@@ -1026,7 +1190,7 @@ mod tests {
         trusted: bool,
         sign_idx: usize,
         load_fee: Option<u32>,
-        clock: Rc<RefCell<ManualClock>>
+        clock: Rc<RefCell<ManualClock>>,
     }
 
     impl TestNode {
@@ -1036,7 +1200,7 @@ mod tests {
                 trusted: true,
                 sign_idx: 1,
                 load_fee: None,
-                clock
+                clock,
             }
         }
 
@@ -1132,14 +1296,14 @@ mod tests {
 
     struct TestAdaptor<'a> {
         oracle: &'a mut LedgerOracle,
-        clock: Rc<RefCell<ManualClock>>
+        clock: Rc<RefCell<ManualClock>>,
     }
 
     impl<'a> TestAdaptor<'a> {
         fn new(oracle: &'a mut LedgerOracle, clock: Rc<RefCell<ManualClock>>) -> Self {
             TestAdaptor {
                 oracle,
-                clock
+                clock,
             }
         }
     }
@@ -1167,7 +1331,7 @@ mod tests {
         params: ValidationParams,
         pub validations: TestValidations<'a>,
         next_node_id: PeerId,
-        clock: Rc<RefCell<ManualClock>>
+        clock: Rc<RefCell<ManualClock>>,
     }
 
     impl<'a> TestHarness<'a> {
@@ -1178,10 +1342,10 @@ mod tests {
                 validations: Validations::new(
                     ValidationParams::default(),
                     TestAdaptor::new(oracle, clock.clone()),
-                    clock.clone()
+                    clock.clone(),
                 ),
                 next_node_id: PeerId(0),
-                clock
+                clock,
             }
         }
 

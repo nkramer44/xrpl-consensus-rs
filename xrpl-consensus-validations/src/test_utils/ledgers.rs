@@ -16,6 +16,12 @@ pub(crate) type TxId = u32;
 #[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone, Hash, Debug)]
 pub(crate) struct LedgerId(u32);
 
+impl LedgerId {
+    pub fn new(id: u32) -> Self {
+        LedgerId(id)
+    }
+}
+
 impl xrpl_consensus_core::LedgerId for LedgerId {
 
 }

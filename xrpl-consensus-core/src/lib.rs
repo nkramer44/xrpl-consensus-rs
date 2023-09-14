@@ -31,6 +31,7 @@ pub trait Validation: Copy + Clone {
     fn cookie(&self) -> u64;
     fn trusted(&self) -> bool;
     fn full(&self) -> bool;
+    fn load_fee(&self) -> Option<u32>;
 }
 
 pub trait NetClock {
