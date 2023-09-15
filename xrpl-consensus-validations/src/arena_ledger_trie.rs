@@ -1184,7 +1184,9 @@ mod tests {
     }
 
     fn insert(trie: &mut ArenaLedgerTrie<SimulatedLedger>, ledger: &SimulatedLedger, count: Option<u32>) {
+        println!("Inserting {}", ledger.to_string());
         trie.insert(&ledger, count);
+        println!("After inserting: {}", serde_json::to_string_pretty(&trie).unwrap());
         assert!(trie.check_invariants());
     }
 

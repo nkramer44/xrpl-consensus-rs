@@ -7,7 +7,7 @@ use serde::Serialize;
 
 pub type LedgerIndex = u32;
 
-pub trait Ledger: Clone {
+pub trait Ledger: Clone + Debug + Display {
     type IdType: LedgerId;
 
     fn id(&self) -> Self::IdType;

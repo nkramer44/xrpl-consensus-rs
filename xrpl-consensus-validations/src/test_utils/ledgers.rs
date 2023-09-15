@@ -51,6 +51,7 @@ impl Tx {
 #[derive(Derivative)]
 #[derivative(Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Debug)]
 pub(crate) struct LedgerInstance {
+    string: String,
     seq: LedgerIndex,
     txs: TxSetType,
     close_time_resolution: Duration,
@@ -74,6 +75,7 @@ impl LedgerInstance {
         ancestors: Vec<LedgerId>,
     ) -> Self {
         LedgerInstance {
+            string: "".to_string(),
             seq: 0,
             txs,
             close_time_resolution: Duration::from_secs(30),
@@ -117,6 +119,12 @@ impl LedgerInstance {
 pub(crate) struct SimulatedLedger {
     instance: Rc<LedgerInstance>,
     id: LedgerId,
+}
+
+impl Display for SimulatedLedger {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.instance.string)
+    }
 }
 
 pub(crate) static GENESIS: Lazy<LedgerInstance> = Lazy::new(|| {
@@ -239,6 +247,7 @@ impl LedgerOracle {
 
     pub fn accept_with_times(
         &mut self,
+        s: &str,
         parent: &SimulatedLedger,
         txs: &TxSetType,
         close_time_resolution: Duration,
@@ -251,6 +260,7 @@ impl LedgerOracle {
         next_ancestors.push(parent.id());
         let next = Rc::new(
             LedgerInstance {
+                string: s.to_string(),
                 seq: parent.seq() + 1,
                 txs: next_txs,
                 close_time_resolution,
@@ -281,10 +291,12 @@ impl LedgerOracle {
 
     pub fn accept(
         &mut self,
+        s: &str,
         curr: &SimulatedLedger,
         tx: Tx,
     ) -> Rc<SimulatedLedger> {
         self.accept_with_times(
+            s,
             curr,
             &vec![tx],
             curr.close_time_resolution(),
@@ -384,7 +396,7 @@ impl LedgerHistoryHelper {
         assert!(self.seen.insert(s.chars().last().unwrap()));
         let parent = self.get_or_create(&s[0..s.len() - 1]);
         self.next_tx += 1;
-        let new_ledger = self.oracle.accept(&parent, Tx::new(self.next_tx));
+        let new_ledger = self.oracle.accept(s.as_str(), &parent, Tx::new(self.next_tx));
         self.ledgers.insert(s, new_ledger.clone());
         new_ledger.clone()
     }

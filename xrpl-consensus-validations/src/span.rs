@@ -48,7 +48,12 @@ pub struct Span<T: Ledger> {
 
 impl<T: Ledger> Display for Span<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}[{}, {})", self.tip().id(), self.start(), self.end())
+        if self.start == 0 {
+            write!(f, "{}-{}[{}, {})", "genesis", self.tip().id(), self.start(), self.end())
+        } else {
+            let string = &self.ledger.to_string()[self.start as usize - 1..self.end() as usize - 1];
+            write!(f, "{}-{}[{}, {})", string, self.tip().id(), self.start(), self.end())
+        }
     }
 }
 
