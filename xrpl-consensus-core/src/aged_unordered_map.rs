@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use crate::NetClock;
 
@@ -14,11 +15,11 @@ pub struct AgedUnorderedMap<K, V, C>
     //  difference between a HashMap and beast::aged_unordered_map is that you can
     //  expire entries, but for simplicity's sake, we can just not expire entries.
     inner: HashMap<K, V>,
-    clock: Rc<RefCell<C>>,
+    clock: Arc<RwLock<C>>,
 }
 
 impl<K: Eq + PartialEq + Hash, V: Default, C: NetClock> AgedUnorderedMap<K, V, C> {
-    pub fn new(clock: Rc<RefCell<C>>) -> Self {
+    pub fn new(clock: Arc<RwLock<C>>) -> Self {
         AgedUnorderedMap {
             inner: Default::default(),
             clock,
@@ -26,7 +27,7 @@ impl<K: Eq + PartialEq + Hash, V: Default, C: NetClock> AgedUnorderedMap<K, V, C
     }
 
     pub fn now(&self) -> SystemTime {
-        self.clock.borrow().now()
+        self.clock.read().unwrap().now()
     }
 
     pub fn get_or_insert(&mut self, k: K) -> &V {

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation, WallNetClock};
@@ -64,7 +65,7 @@ pub struct Validations<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock = W
 }
 
 impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C> {
-    pub fn new(params: ValidationParams, adaptor: A, clock: Rc<RefCell<C>>) -> Self {
+    pub fn new(params: ValidationParams, adaptor: A, clock: Arc<RwLock<C>>) -> Self {
         Validations {
             current: Default::default(),
             local_seq_enforcer: SeqEnforcer::new(),
@@ -638,7 +639,9 @@ pub enum ValidationError {
 mod tests {
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
+    use std::ptr::read;
     use std::rc::Rc;
+    use std::sync::{Arc, RwLock};
     use std::time::{Duration, SystemTime};
 
     use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation};
@@ -1208,11 +1211,11 @@ mod tests {
         trusted: bool,
         sign_idx: usize,
         load_fee: Option<u32>,
-        clock: Rc<RefCell<ManualClock>>,
+        clock: Arc<RwLock<ManualClock>>,
     }
 
     impl TestNode {
-        pub fn new(node_id: PeerId, clock: Rc<RefCell<ManualClock>>) -> Self {
+        pub fn new(node_id: PeerId, clock: Arc<RwLock<ManualClock>>) -> Self {
             TestNode {
                 node_id,
                 trusted: true,
@@ -1251,7 +1254,7 @@ mod tests {
         }
 
         pub fn now(&self) -> SystemTime {
-            self.clock.borrow().now()
+            self.clock.read().unwrap().now()
         }
 
         pub fn validate(
@@ -1314,11 +1317,11 @@ mod tests {
 
     struct TestAdaptor<'a> {
         oracle: &'a mut LedgerOracle,
-        clock: Rc<RefCell<ManualClock>>,
+        clock: Arc<RwLock<ManualClock>>,
     }
 
     impl<'a> TestAdaptor<'a> {
-        fn new(oracle: &'a mut LedgerOracle, clock: Rc<RefCell<ManualClock>>) -> Self {
+        fn new(oracle: &'a mut LedgerOracle, clock: Arc<RwLock<ManualClock>>) -> Self {
             TestAdaptor {
                 oracle,
                 clock,
@@ -1335,7 +1338,7 @@ mod tests {
         type ClockType = ManualClock;
 
         fn now(&self) -> SystemTime {
-            self.clock.borrow().now()
+            self.clock.read().unwrap().now()
         }
 
         fn acquire(&mut self, ledger_id: &Self::LedgerIdType) -> Option<Self::LedgerType> {
@@ -1349,12 +1352,12 @@ mod tests {
         params: ValidationParams,
         pub validations: TestValidations<'a>,
         next_node_id: PeerId,
-        clock: Rc<RefCell<ManualClock>>,
+        clock: Arc<RwLock<ManualClock>>,
     }
 
     impl<'a> TestHarness<'a> {
         pub fn new(oracle: &'a mut LedgerOracle) -> Self {
-            let clock = Rc::new(RefCell::new(ManualClock::new()));
+            let clock = Arc::new(RwLock::new(ManualClock::new()));
             TestHarness {
                 params: Default::default(),
                 validations: Validations::new(
@@ -1381,7 +1384,7 @@ mod tests {
         }
 
         pub fn advance_time(&mut self, dur: Duration) {
-            self.clock.borrow_mut().advance(dur);
+            self.clock.write().unwrap().advance(dur);
         }
     }
 }
