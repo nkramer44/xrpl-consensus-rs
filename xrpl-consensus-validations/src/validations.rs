@@ -494,14 +494,15 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
     }
 
     fn _update_trie(
-        &mut self,
+        trie: &mut T,
+        last_ledger: &mut HashMap<A::NodeIdType, A::LedgerType>,
         node_id: &A::NodeIdType,
         ledger: A::LedgerType,
     ) {
         let ledger_copy = ledger.clone();
-        match self.last_ledger.entry(*node_id) {
+        match last_ledger.entry(*node_id) {
             Entry::Occupied(mut e) => {
-                self.trie.remove(e.get(), None);
+                trie.remove(e.get(), None);
                 e.insert(ledger_copy);
             }
             Entry::Vacant(e) => {
@@ -509,7 +510,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
             }
         }
 
-        self.trie.insert(&ledger, None);
+        trie.insert(&ledger, None);
     }
 
     async fn _process_validation(
@@ -530,6 +531,8 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
             }
         }
 
+        self.check_acquired().await;
+
         match self.acquiring.entry((validation.seq(), validation.ledger_id())) {
             Entry::Occupied(mut e) => {
                 e.get_mut().insert(*node_id);
@@ -541,7 +544,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                             .insert(*node_id);
                     }
                     Some(ledger) => {
-                        self._update_trie(node_id, ledger);
+                        Self::_update_trie(&mut self.trie, &mut self.last_ledger, node_id, ledger);
                     }
                 }
             }
@@ -616,6 +619,22 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         } else {
             pre(0)
         }
+    }
+
+    async fn check_acquired(&mut self) {
+        let (trie, last_ledger) = (&mut self.trie, &mut self.last_ledger);
+        let mut to_remove = vec![];
+        for ((seq, id), node_ids) in &self.acquiring {
+            if let Some(ledger) = self.adaptor.acquire(&id).await {
+                for node_id in node_ids {
+                    Self::_update_trie(trie, last_ledger, node_id, ledger.clone())
+                }
+
+                to_remove.push((*seq, *id));
+            }
+        }
+
+        to_remove.iter().for_each(|r| { self.acquiring.remove(r); })
     }
 }
 
