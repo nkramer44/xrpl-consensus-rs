@@ -13,6 +13,10 @@ derivative = "2.2.0"
 bimap = "0.6.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
+async-trait = "0.1.73"
+tokio-macros = "2.1.0"
+tokio = { version = "1.32.0", features = ["rt", "macros"] }
+
 
 [dev-dependencies]
 rand = "0.8.5"

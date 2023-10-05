@@ -1,9 +1,7 @@
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::ops::Range;
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -111,7 +109,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
     /// - **validation**: The validation to store.
     ///
     /// Returns `Ok(())` if the validation was added, or an `Err(ValidationError)` if not.
-    pub fn try_add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> Result<(), ValidationError> {
+    pub async fn try_add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> Result<(), ValidationError> {
         if !Self::_is_current(
             self.params(),
             &self.adaptor().now(),
@@ -186,7 +184,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                     let old = (e.get().seq(), e.get().ledger_id());
                     e.insert(*validation);
                     if validation.trusted() {
-                        self._process_validation(node_id, validation, Some(old));
+                        self._process_validation(node_id, validation, Some(old)).await;
                     }
                 } else {
                     return Err(ValidationError::Stale);
@@ -195,7 +193,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
             Entry::Vacant(e) => {
                 e.insert(*validation);
                 if validation.trusted() {
-                    self._process_validation(node_id, validation, None);
+                    self._process_validation(node_id, validation, None).await;
                 }
             }
         }
@@ -514,7 +512,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         self.trie.insert(&ledger, None);
     }
 
-    fn _process_validation(
+    async fn _process_validation(
         &mut self,
         node_id: &A::NodeIdType,
         validation: &A::ValidationType,
@@ -537,7 +535,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 e.get_mut().insert(*node_id);
             }
             Entry::Vacant(e) => {
-                match self.adaptor.acquire(&validation.ledger_id()) {
+                match self.adaptor.acquire(&validation.ledger_id()).await {
                     None => {
                         self.acquiring.entry((validation.seq(), validation.ledger_id())).or_default()
                             .insert(*node_id);
@@ -637,12 +635,11 @@ pub enum ValidationError {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
-    use std::ptr::read;
-    use std::rc::Rc;
     use std::sync::{Arc, RwLock};
     use std::time::{Duration, SystemTime};
+
+    use async_trait::async_trait;
 
     use xrpl_consensus_core::{Ledger, LedgerIndex, NetClock, Validation};
 
@@ -652,10 +649,10 @@ mod tests {
     use crate::test_utils::ManualClock;
     use crate::test_utils::validation::{PeerId, PeerKey, TestValidation};
     use crate::validation_params::ValidationParams;
-    use crate::validations::{Validations, ValidationError};
+    use crate::validations::{ValidationError, Validations};
 
-    #[test]
-    fn test_add_validations() {
+    #[tokio::test]
+    async fn test_add_validations() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ab = h.get_or_create("ab");
@@ -667,15 +664,15 @@ mod tests {
         let mut harness = TestHarness::new(h.oracle_mut());
         let mut node = harness.make_node();
         let v = node.validate_ledger(&a);
-        assert_eq!(harness.try_add(&v), Ok(()));
+        assert_eq!(harness.try_add(&v).await, Ok(()));
 
         // Re-adding violates the increasing seq requirement for full
         // validations
-        assert_eq!(harness.try_add(&v), Err(ValidationError::BadSeq));
+        assert_eq!(harness.try_add(&v).await, Err(ValidationError::BadSeq));
 
         harness.advance_time(Duration::from_secs(1));
 
-        assert_eq!(harness.try_add(&node.validate_ledger(&ab)), Ok(()));
+        assert_eq!(harness.try_add(&node.validate_ledger(&ab)).await, Ok(()));
 
         // Test the node changing signing key
 
@@ -691,14 +688,14 @@ mod tests {
         harness.advance_time(Duration::from_secs(1));
 
         // Cannot re-do the same full validation sequence
-        assert_eq!(harness.try_add(&node.validate_ledger(&ab)), Err(ValidationError::Conflicting));
+        assert_eq!(harness.try_add(&node.validate_ledger(&ab)).await, Err(ValidationError::Conflicting));
 
         // Cannot send the same partial validation sequence
-        assert_eq!(harness.try_add(&node.partial(&ab)), Err(ValidationError::Conflicting));
+        assert_eq!(harness.try_add(&node.partial(&ab)).await, Err(ValidationError::Conflicting));
 
         // Now trusts the newest ledger too
         harness.advance_time(Duration::from_secs(1));
-        assert_eq!(harness.try_add(&node.validate_ledger(&abc)), Ok(()));
+        assert_eq!(harness.try_add(&node.validate_ledger(&abc)).await, Ok(()));
         assert_eq!(harness.validations.num_trusted_for_ledger(&ab.id()), 1);
         assert_eq!(harness.validations.num_trusted_for_ledger(&abc.id()), 1);
 
@@ -709,12 +706,12 @@ mod tests {
         harness.advance_time(Duration::from_secs(4));
         let val_abcd = node.validate_ledger(&abcd);
 
-        assert_eq!(harness.try_add(&val_abcd), Ok(()));
-        assert_eq!(harness.try_add(&val_abcde), Err(ValidationError::Stale));
+        assert_eq!(harness.try_add(&val_abcd).await, Ok(()));
+        assert_eq!(harness.try_add(&val_abcde).await, Err(ValidationError::Stale));
     }
 
-    #[test]
-    fn test_add_validations_out_of_order_with_shifted_times() {
+    #[tokio::test]
+    async fn test_add_validations_out_of_order_with_shifted_times() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ab = h.get_or_create("ab");
@@ -727,14 +724,14 @@ mod tests {
         let node = harness.make_node();
 
         // Establish a new current validation
-        assert_eq!(harness.try_add(&node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&node.validate_ledger(&a)).await, Ok(()));
 
         // Process a validation that has "later" seq but early sign time
         assert_eq!(harness.try_add(&node.validate_full(
             &ab,
             DurationOffset::Minus(Duration::from_secs(1)),
             DurationOffset::Minus(Duration::from_secs(1)),
-        )), Err(ValidationError::Stale));
+        )).await, Err(ValidationError::Stale));
 
         // Process a validation that has a later seq and later sign
         // time
@@ -742,11 +739,11 @@ mod tests {
             &abc,
             DurationOffset::Plus(Duration::from_secs(1)),
             DurationOffset::Plus(Duration::from_secs(1)),
-        )), Ok(()));
+        )).await, Ok(()));
     }
 
-    #[test]
-    fn test_add_validations_stale_on_arrival() {
+    #[tokio::test]
+    async fn test_add_validations_stale_on_arrival() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ab = h.get_or_create("ab");
@@ -762,7 +759,7 @@ mod tests {
                 &a,
                 DurationOffset::Minus(harness.params().validation_current_early()),
                 DurationOffset::Zero,
-            )),
+            )).await,
             Err(ValidationError::Stale)
         );
 
@@ -771,7 +768,7 @@ mod tests {
                 &a,
                 DurationOffset::Plus(harness.params().validation_current_wall()),
                 DurationOffset::Zero,
-            )),
+            )).await,
             Err(ValidationError::Stale)
         );
 
@@ -780,13 +777,13 @@ mod tests {
                 &a,
                 DurationOffset::Zero,
                 DurationOffset::Plus(harness.params().validation_current_local()),
-            )),
+            )).await,
             Err(ValidationError::Stale)
         );
     }
 
-    #[test]
-    fn test_add_validations_full_or_partials_cannot_be_sent_for_older_seqs_unless_timeout() {
+    #[tokio::test]
+    async fn test_add_validations_full_or_partials_cannot_be_sent_for_older_seqs_unless_timeout() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ab = h.get_or_create("ab");
@@ -795,38 +792,46 @@ mod tests {
         let abcd = h.get_or_create("abcd");
         let abcde = h.get_or_create("abcde");
 
-        let mut do_test = |do_full: bool| {
-            let mut harness = TestHarness::new(h.oracle_mut());
-            let node = harness.make_node();
+        do_test(true, &ab, &abc, &az, &mut h).await;
+        do_test(false, &ab, &abc, &az, &mut h).await;
+    }
 
-            let process = |harness: &mut TestHarness, ledger: &SimulatedLedger| {
-                if do_full {
-                    harness.try_add(&node.validate_ledger(ledger))
-                } else {
-                    harness.try_add(&node.partial(ledger))
-                }
-            };
+    async fn do_test(do_full: bool, ab: &SimulatedLedger, abc: &SimulatedLedger, az: &SimulatedLedger, h: &mut LedgerHistoryHelper) {
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let node = harness.make_node();
 
-            assert_eq!(process(&mut harness, &abc), Ok(()));
-            harness.advance_time(Duration::from_secs(1));
-            assert!(ab.seq() < abc.seq());
-            assert_eq!(process(&mut harness, &ab), Err(ValidationError::BadSeq));
+        /*let process = |harness: &mut TestHarness, ledger: &SimulatedLedger| {
+            if do_full {
+                harness.try_add(&node.validate_ledger(ledger)).await
+            } else {
+                harness.try_add(&node.partial(ledger)).await
+            }
+        };*/
 
-            // If we advance far enough for AB to expire, we can fully
-            // validate or partially validate that sequence number again
-            assert_eq!(process(&mut harness, &az), Err(ValidationError::Conflicting));
-            harness.advance_time(harness.params().validation_set_expires() + Duration::from_millis(1));
-            assert_eq!(process(&mut harness, &az), Ok(()));
-        };
+        assert_eq!(process(do_full, &node, &mut harness, &abc).await, Ok(()));
+        harness.advance_time(Duration::from_secs(1));
+        assert!(ab.seq() < abc.seq());
+        assert_eq!(process(do_full, &node, &mut harness, &ab).await, Err(ValidationError::BadSeq));
 
-        do_test(true);
-        do_test(false);
+        // If we advance far enough for AB to expire, we can fully
+        // validate or partially validate that sequence number again
+        assert_eq!(process(do_full, &node, &mut harness, &az).await, Err(ValidationError::Conflicting));
+        harness.advance_time(harness.params().validation_set_expires() + Duration::from_millis(1));
+        assert_eq!(process(do_full, &node, &mut harness, &az).await, Ok(()));
+    }
+
+    async fn process(do_full: bool, node: &TestNode, harness: &mut TestHarness<'_>, ledger: &SimulatedLedger) -> Result<(), ValidationError> {
+        if do_full {
+            harness.try_add(&node.validate_ledger(ledger)).await
+        } else {
+            harness.try_add(&node.partial(ledger)).await
+        }
     }
 
     /// Verify validation becomes stale based solely on time passing, but
     /// use different functions to trigger the check for staleness
-    #[test]
-    fn test_on_stale() {
+    #[tokio::test]
+    async fn test_on_stale() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ab = h.get_or_create("ab");
@@ -840,32 +845,36 @@ mod tests {
             // Box::new(|vals: &mut TestValidations| { vals.current_trusted(); }),
         ];
 
-        triggers.iter().for_each(|trigger| {
-            let mut harness = TestHarness::new(h.oracle_mut());
-            let node = harness.make_node();
+        for trigger in triggers {
+            run_test_for_trigger(trigger, &a, &ab, &mut h).await;
+        }
+    }
 
-            assert_eq!(harness.try_add(&node.validate_ledger(&ab)), Ok(()));
-            trigger(&mut harness.validations);
-            assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 1);
-            assert_eq!(
-                harness.validations.get_preferred(&genesis),
-                Some((ab.seq(), ab.id()))
-            );
+    async fn run_test_for_trigger(trigger: Box<dyn Fn(&mut TestValidations)>, a: &SimulatedLedger, ab: &SimulatedLedger, h: &mut LedgerHistoryHelper) {
+        let mut harness = TestHarness::new(h.oracle_mut());
+        let node = harness.make_node();
 
-            harness.advance_time(harness.params().validation_current_local());
+        assert_eq!(harness.try_add(&node.validate_ledger(&ab)).await, Ok(()));
+        trigger(&mut harness.validations);
+        assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 1);
+        assert_eq!(
+            harness.validations.get_preferred(&SimulatedLedger::genesis()),
+            Some((ab.seq(), ab.id()))
+        );
 
-            trigger(&mut harness.validations);
+        harness.advance_time(harness.params().validation_current_local());
 
-            assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 0);
-            assert_eq!(harness.validations.get_preferred(&genesis), None);
-        })
+        trigger(&mut harness.validations);
+
+        assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 0);
+        assert_eq!(harness.validations.get_preferred(&SimulatedLedger::genesis()), None);
     }
 
     /// Test getting number of nodes working on a validation descending
     /// a prescribed one. This count should only be for trusted nodes, but
     /// includes partial and full validations.
-    #[test]
-    fn test_get_nodes_after() {
+    #[tokio::test]
+    async fn test_get_nodes_after() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ab = h.get_or_create("ab");
@@ -879,10 +888,10 @@ mod tests {
         let d_node = harness.make_node();
         c_node.untrust();
 
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
-        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)), Ok(()));
-        assert_eq!(harness.try_add(&c_node.validate_ledger(&a)), Ok(()));
-        assert_eq!(harness.try_add(&d_node.partial(&a)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)).await, Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)).await, Ok(()));
+        assert_eq!(harness.try_add(&c_node.validate_ledger(&a)).await, Ok(()));
+        assert_eq!(harness.try_add(&d_node.partial(&a)).await, Ok(()));
 
         vec![&a, &ab, &abc, &ad].into_iter().for_each(|ledger| {
             assert_eq!(harness.validations.get_nodes_after(ledger, ledger.id()), 0);
@@ -890,10 +899,10 @@ mod tests {
 
         harness.advance_time(Duration::from_secs(5));
 
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&ab)), Ok(()));
-        assert_eq!(harness.try_add(&b_node.validate_ledger(&abc)), Ok(()));
-        assert_eq!(harness.try_add(&c_node.validate_ledger(&ab)), Ok(()));
-        assert_eq!(harness.try_add(&d_node.partial(&abc)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&ab)).await, Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&abc)).await, Ok(()));
+        assert_eq!(harness.try_add(&c_node.validate_ledger(&ab)).await, Ok(()));
+        assert_eq!(harness.try_add(&d_node.partial(&abc)).await, Ok(()));
 
         assert_eq!(harness.validations.get_nodes_after(&a, a.id()), 3);
         assert_eq!(harness.validations.get_nodes_after(&ab, ab.id()), 2);
@@ -906,8 +915,8 @@ mod tests {
         assert_eq!(harness.validations.get_nodes_after(&ad, ab.id()), 2);
     }
 
-    #[test]
-    fn test_current_trusted() {
+    #[tokio::test]
+    async fn test_current_trusted() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let b = h.get_or_create("b");
@@ -918,8 +927,8 @@ mod tests {
         let mut b_node = harness.make_node();
         b_node.untrust();
 
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
-        assert_eq!(harness.try_add(&b_node.validate_ledger(&b)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)).await, Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&b)).await, Ok(()));
 
         // Only a_node is trusted
         assert_eq!(harness.validations.current_trusted().len(), 1);
@@ -928,8 +937,8 @@ mod tests {
 
         harness.advance_time(Duration::from_secs(3));
 
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&ac)), Ok(()));
-        assert_eq!(harness.try_add(&b_node.validate_ledger(&ac)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&ac)).await, Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&ac)).await, Ok(()));
 
         // New validation for a_node
         assert_eq!(harness.validations.current_trusted().len(), 1);
@@ -941,8 +950,8 @@ mod tests {
         assert!(harness.validations.current_trusted().is_empty());
     }
 
-    #[test]
-    fn test_get_current_public_keys() {
+    #[tokio::test]
+    async fn test_get_current_public_keys() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let ac = h.get_or_create("ac");
@@ -952,8 +961,8 @@ mod tests {
         let mut b_node = harness.make_node();
         b_node.untrust();
 
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
-        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)).await, Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)).await, Ok(()));
 
         assert_eq!(harness.validations.get_current_node_ids(), HashSet::from([a_node.node_id(), b_node.node_id()]));
 
@@ -963,8 +972,8 @@ mod tests {
         a_node.advance_key();
         b_node.advance_key();
 
-        assert_eq!(harness.try_add(&a_node.partial(&ac)), Ok(()));
-        assert_eq!(harness.try_add(&b_node.partial(&ac)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.partial(&ac)).await, Ok(()));
+        assert_eq!(harness.try_add(&b_node.partial(&ac)).await, Ok(()));
 
         assert_eq!(harness.validations.get_current_node_ids(), HashSet::from([a_node.node_id(), b_node.node_id()]));
 
@@ -979,8 +988,8 @@ mod tests {
     /// exercise this logic by saving the set of trusted Validations, and
     /// verifying that the Validations member functions all calculate the
     /// proper transformation of the available ledgers.
-    #[test]
-    fn test_trusted_by_ledger() {
+    #[tokio::test]
+    async fn test_trusted_by_ledger() {
         let mut h = LedgerHistoryHelper::new();
 
         let a = h.get_or_create("a");
@@ -1006,40 +1015,40 @@ mod tests {
         trusted_validations.insert((LedgerId::new(100), 100), vec![]);
 
         // first round a,b,c agree
-        vec![&a_node, &b_node, &c_node].into_iter().for_each(|node| {
+        for node in vec![&a_node, &b_node, &c_node] {
             let val = node.validate_ledger(&a);
-            assert_eq!(harness.try_add(&val), Ok(()));
+            assert_eq!(harness.try_add(&val).await, Ok(()));
             if val.trusted() {
                 trusted_validations.entry((val.ledger_id(), val.seq())).or_default()
                     .push(val);
             }
-        });
+        }
 
         // d disagrees
         let val = d_node.validate_ledger(&b);
-        assert_eq!(harness.try_add(&val), Ok(()));
+        assert_eq!(harness.try_add(&val).await, Ok(()));
         trusted_validations.entry((val.ledger_id(), val.seq())).or_default().push(val);
 
         // e only issued partials
-        assert_eq!(harness.try_add(&e_node.partial(&a)), Ok(()));
+        assert_eq!(harness.try_add(&e_node.partial(&a)).await, Ok(()));
 
         harness.advance_time(Duration::from_secs(5));
         // second round, a,b,c move to ledger 2
-        vec![&a_node, &b_node, &c_node].into_iter().for_each(|node| {
+        for node in vec![&a_node, &b_node, &c_node] {
             let val = node.validate_ledger(&ac);
-            assert_eq!(harness.try_add(&val), Ok(()));
+            assert_eq!(harness.try_add(&val).await, Ok(()));
             if val.trusted() {
                 trusted_validations.entry((val.ledger_id(), val.seq())).or_default()
                     .push(val);
             }
-        });
+        }
 
         // d now thinks ledger 1, but cannot re-issue a previously used seq
         // and attempting it should generate a conflict.
-        assert_eq!(harness.try_add(&d_node.partial(&a)), Err(ValidationError::Conflicting));
+        assert_eq!(harness.try_add(&d_node.partial(&a)).await, Err(ValidationError::Conflicting));
 
         // e only issues partials
-        assert_eq!(harness.try_add(&e_node.partial(&ac)), Ok(()));
+        assert_eq!(harness.try_add(&e_node.partial(&ac)).await, Ok(()));
 
         trusted_validations.iter_mut().for_each(|((id, seq), vals)| {
             assert_eq!(harness.validations.num_trusted_for_ledger(id), vals.len());
@@ -1075,8 +1084,8 @@ mod tests {
         // TODO: Implement this if we ever implement flush()
     }
 
-    #[test]
-    fn test_get_preferred_ledger() {
+    #[tokio::test]
+    async fn test_get_preferred_ledger() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let b = h.get_or_create("b");
@@ -1094,7 +1103,7 @@ mod tests {
         assert!(harness.validations.get_preferred(&a).is_none());
 
         // Single ledger
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&b)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&b)).await, Ok(()));
         assert_eq!(harness.validations.get_preferred(&a), Some((b.seq(), b.id())));
         assert_eq!(harness.validations.get_preferred(&b), Some((b.seq(), b.id())));
 
@@ -1103,23 +1112,23 @@ mod tests {
 
         // Untrusted doesn't impact preferred ledger
         // (ledger a has tie-break over ledger b)
-        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)), Ok(()));
-        assert_eq!(harness.try_add(&c_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&b_node.validate_ledger(&a)).await, Ok(()));
+        assert_eq!(harness.try_add(&c_node.validate_ledger(&a)).await, Ok(()));
         assert!(b.id() > a.id());
         assert_eq!(harness.validations.get_preferred(&a), Some((b.seq(), b.id())));
         assert_eq!(harness.validations.get_preferred(&b), Some((b.seq(), b.id())));
 
         // Partial does break ties
-        assert_eq!(harness.try_add(&d_node.partial(&a)), Ok(()));
+        assert_eq!(harness.try_add(&d_node.partial(&a)).await, Ok(()));
         assert_eq!(harness.validations.get_preferred(&a), Some((a.seq(), a.id())));
         assert_eq!(harness.validations.get_preferred(&b), Some((a.seq(), a.id())));
 
         harness.advance_time(Duration::from_secs(5));
 
         // Parent of preferred-> stick with ledger
-        vec![&a_node, &b_node, &c_node, &d_node].into_iter().for_each(|node| {
-            assert_eq!(harness.try_add(&node.validate_ledger(&ac)), Ok(()));
-        });
+        for node in vec![&a_node, &b_node, &c_node, &d_node] {
+            assert_eq!(harness.try_add(&node.validate_ledger(&ac)).await, Ok(()));
+        };
 
         // Parent of preferred stays put
         assert_eq!(harness.validations.get_preferred(&a), Some((a.seq(), a.id())));
@@ -1130,17 +1139,17 @@ mod tests {
 
         // Any later grandchild or different chain is preferred
         harness.advance_time(Duration::from_secs(5));
-        vec![&a_node, &b_node, &c_node, &d_node].into_iter().for_each(|node| {
-            assert_eq!(harness.try_add(&node.validate_ledger(&acd)), Ok(()));
-        });
+        for node in vec![&a_node, &b_node, &c_node, &d_node] {
+            assert_eq!(harness.try_add(&node.validate_ledger(&acd)).await, Ok(()));
+        };
 
         vec![&a, &b, &acd].into_iter().for_each(|ledger| {
             assert_eq!(harness.validations.get_preferred(ledger), Some((acd.seq(), acd.id())));
         })
     }
 
-    #[test]
-    fn test_get_preferred_lcl() {
+    #[tokio::test]
+    async fn test_get_preferred_lcl() {
         let mut h = LedgerHistoryHelper::new();
         let a = h.get_or_create("a");
         let b = h.get_or_create("b");
@@ -1169,7 +1178,7 @@ mod tests {
         *peer_counts.get_mut(&c.id()).unwrap() += 1000;
 
         // Single trusted always wins over peer counts
-        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)), Ok(()));
+        assert_eq!(harness.try_add(&a_node.validate_ledger(&a)).await, Ok(()));
         assert_eq!(harness.validations.get_preferred_lcl(&a, 0, &peer_counts), a.id());
         assert_eq!(harness.validations.get_preferred_lcl(&b, 0, &peer_counts), a.id());
         assert_eq!(harness.validations.get_preferred_lcl(&c, 0, &peer_counts), a.id());
@@ -1329,6 +1338,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl<'a> Adaptor for TestAdaptor<'a> {
         type ValidationType = TestValidation;
         type LedgerType = SimulatedLedger;
@@ -1341,7 +1351,7 @@ mod tests {
             self.clock.read().unwrap().now()
         }
 
-        fn acquire(&mut self, ledger_id: &Self::LedgerIdType) -> Option<Self::LedgerType> {
+        async fn acquire(&mut self, ledger_id: &Self::LedgerIdType) -> Option<Self::LedgerType> {
             self.oracle.lookup(ledger_id)
         }
     }
@@ -1370,8 +1380,8 @@ mod tests {
             }
         }
 
-        pub fn try_add(&mut self, v: &TestValidation) -> Result<(), ValidationError> {
-            self.validations.try_add(&v.node_id(), v)
+        pub async fn try_add(&mut self, v: &TestValidation) -> Result<(), ValidationError> {
+            self.validations.try_add(&v.node_id(), v).await
         }
 
         pub fn make_node(&mut self) -> TestNode {

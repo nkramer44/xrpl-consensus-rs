@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::ops::{Add, Div, Sub};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bimap::BiMap;
@@ -117,7 +118,7 @@ impl LedgerInstance {
 /// number and close time.
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Debug)]
 pub(crate) struct SimulatedLedger {
-    instance: Rc<LedgerInstance>,
+    instance: Arc<LedgerInstance>,
     id: LedgerId,
 }
 
@@ -134,12 +135,12 @@ pub(crate) static GENESIS: Lazy<LedgerInstance> = Lazy::new(|| {
 impl SimulatedLedger {
     pub fn genesis() -> Self {
         SimulatedLedger {
-            instance: Rc::new(LedgerInstance::genesis()),
+            instance: Arc::new(LedgerInstance::genesis()),
             id: LedgerId(0),
         }
     }
 
-    pub fn new(id: LedgerId, instance: Rc<LedgerInstance>) -> Self {
+    pub fn new(id: LedgerId, instance: Arc<LedgerInstance>) -> Self {
         SimulatedLedger {
             id,
             instance,
@@ -228,13 +229,13 @@ impl Ledger for SimulatedLedger {
 /// Oracle maintaining unique ledgers for a simulation.
 #[derive(Debug)]
 pub(crate) struct LedgerOracle {
-    instances: BiMap<Rc<LedgerInstance>, LedgerId>,
+    instances: BiMap<Arc<LedgerInstance>, LedgerId>,
 }
 
 impl LedgerOracle {
     pub fn new() -> Self {
         let mut instances = BiMap::new();
-        instances.insert(Rc::new(LedgerInstance::genesis()), LedgerId(0));
+        instances.insert(Arc::new(LedgerInstance::genesis()), LedgerId(0));
         LedgerOracle {
             instances
         }
@@ -258,7 +259,7 @@ impl LedgerOracle {
         let close_time_agree = parent.close_time() != UNIX_EPOCH;
         let mut next_ancestors = parent.instance.ancestors.clone();
         next_ancestors.push(parent.id());
-        let next = Rc::new(
+        let next = Arc::new(
             LedgerInstance {
                 string: s.to_string(),
                 seq: parent.seq() + 1,
