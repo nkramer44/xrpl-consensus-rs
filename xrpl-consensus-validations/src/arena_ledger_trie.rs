@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::os::macos::raw::stat;
 
 use generational_arena::{Arena, Index};
 use serde::{Serialize, Serializer};
