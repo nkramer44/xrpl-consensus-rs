@@ -85,6 +85,10 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
         &self.adaptor
     }
 
+    pub fn adaptor_mut(&mut self) -> &mut A {
+        &mut self.adaptor
+    }
+
     pub fn params(&self) -> &ValidationParams {
         &self.params
     }
