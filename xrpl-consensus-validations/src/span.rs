@@ -1,5 +1,5 @@
 use std::fmt::{Display, Formatter};
-use serde::Serialize;
+
 use xrpl_consensus_core::{Ledger, LedgerIndex};
 
 /// The tip of a span of ledger ancestry.

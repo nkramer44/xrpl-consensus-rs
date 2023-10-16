@@ -1,9 +1,8 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
+
 use crate::NetClock;
 
 pub struct AgedUnorderedMap<K, V, C>
@@ -42,7 +41,7 @@ impl<K: Eq + PartialEq + Hash, V: Default, C: NetClock> AgedUnorderedMap<K, V, C
         self.inner.get(k)
     }
 
-    pub fn touch(&self, k: &K) {
+    pub fn touch(&self, _k: &K) {
         // TODO: Update the timestamp on the entry
     }
 }

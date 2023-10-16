@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bimap::BiMap;
 use derivative::Derivative;
 use once_cell::sync::Lazy;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 use xrpl_consensus_core::{Ledger, LedgerIndex};
 
