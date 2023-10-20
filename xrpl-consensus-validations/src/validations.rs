@@ -113,7 +113,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
     /// - **validation**: The validation to store.
     ///
     /// Returns `Ok(())` if the validation was added, or an `Err(ValidationError)` if not.
-    pub async fn try_add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> Result<(), ValidationError> {
+    pub async fn try_add(&mut self, node_id: &A::NodeIdType, validation: &A::ValidationType) -> Result<(), ValidationError<A::ValidationType>> {
         if !Self::_is_current(
             self.params(),
             &self.adaptor().now(),
@@ -158,7 +158,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 // ledgers. This could be the result of misconfiguration
                 // but it can also mean a Byzantine validator.
                 if inserted.ledger_id() != validation.ledger_id() {
-                    return Err(ValidationError::Conflicting);
+                    return Err(ValidationError::ConflictingLedgerId);
                 }
 
                 // Two validations for the same sequence and for the same
@@ -166,7 +166,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 // result of a misconfiguration but it can also mean a
                 // Byzantine validator.
                 if inserted.sign_time() != validation.sign_time() {
-                    return Err(ValidationError::Conflicting);
+                    return Err(ValidationError::ConflictingSignTime(inserted.clone()));
                 }
 
                 // Two validations for the same sequence but with different
@@ -644,7 +644,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
 
 /// Errors related to validations we received.
 #[derive(Eq, PartialEq, Debug)]
-pub enum ValidationError {
+pub enum ValidationError<T> {
     /// Validation is not current or was older than the current validation from this node.
     Stale,
     /// A validation violates the increasing sequence requirement.
@@ -652,7 +652,8 @@ pub enum ValidationError {
     /// Multiple validations by a validator for the same ledger.
     Multiple,
     /// Multiple validations by a validator for different ledgers.
-    Conflicting,
+    ConflictingLedgerId,
+    ConflictingSignTime(T),
 }
 
 
