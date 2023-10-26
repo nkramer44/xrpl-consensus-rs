@@ -279,7 +279,7 @@ impl<A: Adaptor, T: LedgerTrie<A::LedgerType>, C: NetClock> Validations<A, T, C>
                 // If we are the parent of the preferred ledger, stick with our
                 // current ledger since we might be about to generate it
                 if preferred.seq() == curr.seq() + 1 &&
-                    preferred.ancestor(curr.seq()) == curr.id() {
+                    preferred.ancestor(0) == curr.id() {//TODO ask Noah
                     return Some((curr.seq(), curr.id()));
                 }
 
